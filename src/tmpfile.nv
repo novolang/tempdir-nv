@@ -1,0 +1,458 @@
+// tmpfile.nv — a temporary file, and the open that makes it safe.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE FLAGS ARE THE WHOLE SUBJECT.  `mktemp(3)` was deprecated, and
+// `tmpnam` after it, for one reason: they answer a NAME, and a name is
+// a promise about the past.  Between the answer and the caller's
+// `open` another process can create that path — as a file, or as a
+// symbolic link pointing at something the caller has permission to
+// write and did not mean to.  The repair is `O_CREAT | O_EXCL` with
+// mode `0600`: the kernel creates the name or refuses, in one step,
+// and `O_EXCL` refuses rather than following a link.  A collision is
+// not an error, it is a signal to draw another token — which is why
+// `tmpname` publishes an attempt count.
+//
+// `TmpOpen` is those flags as a value so they can be read, asserted on
+// and argued about rather than buried in a call.  `open_flags` answers
+// the POSIX flag word it stands for, which is the one place in this
+// package where a reader can check the claim against a manual page.
+//
+// WHAT THE STANDARD LIBRARY DOES NOT HAVE TODAY, named here rather
+// than worked around: `std.fs` has no exclusive create.  `fs.open_write`
+// creates a file if it is absent and opens it if it is not, with no
+// `O_EXCL` and no mode argument; the only atomic creations are
+// `fs.temp_file()` and `fs.temp_dir()`, which take neither a prefix nor
+// a root and always use the platform temp directory.  So exactly two
+// of this package's constructors are implementable over the standard
+// library as it stands — `create_file()` and `tmpdir.create_dir()`,
+// both of which delegate — and every constructor that takes a root or
+// a naming policy needs an `fs.open_exclusive(path, mode) -> ?Int` that
+// does not exist yet.  The interface is published with the signatures
+// it should have, and the missing row is in the README and in the
+// changelog, because a temporary-file package whose named constructors
+// were quietly non-atomic would be worse than one that does not build.
+//
+// THE FILE AND THE HANDLE ARE SEPARATE.  A `TmpFile` is a path with a
+// disposition, like a `TmpDir`; it does not hold an open descriptor.
+// Holding one would mean this package owned the handle's lifetime too,
+// in a language where it cannot, and it would make the value
+// un-copyable in a way nothing else here is.  `open_read` and
+// `open_write` hand back the standard library's `File`, which the
+// caller closes.
+
+use tmproot
+use tmpname
+use tmpdir
+
+// The flags a temporary file is created with.
+//
+// A value, so that "this package creates exclusively, at mode 0600" is
+// something a test can assert rather than something a reader has to
+// take on trust.
+pub struct TmpOpen
+    // `O_EXCL`: the create fails if the path exists, and does not
+    // follow a symbolic link at the final component.  True in every
+    // policy this package publishes; false exists only so a caller
+    // reusing `open_flags` for something else can say so.
+    exclusive: Bool
+    // `O_TRUNC`: an existing file is emptied.  Meaningless together
+    // with `exclusive`, and false in the default policy for exactly
+    // that reason.
+    truncate: Bool
+    // The mode the file is created with, as an octal integer.  `0o600`
+    // — owner read and write, nothing for anybody else — because a
+    // temporary file in a world-readable directory is the other half of
+    // the classic defect, and a caller who wants it group-readable is
+    // making a decision rather than inheriting one from a umask.
+    mode: Int
+
+// The policy every constructor here uses: exclusive, no truncation,
+// mode `0o600`.
+//
+// ```novo
+// use tmpfile
+//
+// fn main() [io]
+//     println("${tmpfile.exclusive_create().exclusive}")
+// ```
+pub fn exclusive_create() -> TmpOpen []
+    todo("tempdir-nv.tmpfile.exclusive_create")
+
+// The policy with a different mode.
+//
+// ```novo
+// use tmpfile
+//
+// fn main() [io]
+//     println("${tmpfile.with_mode(tmpfile.exclusive_create(), 384).mode}")
+// ```
+pub fn with_mode(o: TmpOpen, mode: Int) -> TmpOpen []
+    todo("tempdir-nv.tmpfile.with_mode")
+
+// The POSIX open flags this policy stands for, or-ed together.
+//
+// `O_WRONLY | O_CREAT` always, plus `O_EXCL` and `O_TRUNC` as the
+// policy says.  Published so the claim in the module comment is
+// checkable against a manual page instead of being prose.
+//
+// ```novo
+// use tmpfile
+//
+// fn main() [io]
+//     println("${tmpfile.open_flags(tmpfile.exclusive_create())}")
+// ```
+pub fn open_flags(o: TmpOpen) -> Int []
+    todo("tempdir-nv.tmpfile.open_flags")
+
+// A temporary file this package created.
+//
+// `root` travels with it for the same reason it travels with a
+// `TmpDir`: `close` removes nothing that is not under it.
+pub struct TmpFile
+    root: tmproot.TmpRoot
+    // Absolute, under `root`.
+    path: Str
+    disposition: tmpdir.TmpDisposition
+
+// A new empty file under the platform temp root.
+//
+// ```novo
+// use tmpname
+// use tmpfile
+//
+// fn main() [io, fs, rand]
+//     match tmpfile.create_file(tmpname.with_suffix(tmpname.prefixed("novo-"), ".json"))
+//         Ok(f)  => println(tmpfile.file_path(f))
+//         Err(e) => println(e.message())
+// ```
+pub fn create_file(n: tmpname.TmpNaming) -> Result<TmpFile, tmproot.TmpError> [fs, io, rand]
+    todo("tempdir-nv.tmpfile.create_file")
+
+// A new empty file under a root the caller already has.
+//
+// ```novo
+// use tmproot
+// use tmpname
+// use tmpfile
+//
+// fn main() [io, fs, rand]
+//     let r = tmproot.root_unchecked("/tmp")
+//     match tmpfile.create_file_in(r, tmpname.naming())
+//         Ok(f)  => println(tmpfile.file_path(f))
+//         Err(e) => println(e.message())
+// ```
+pub fn create_file_in(r: tmproot.TmpRoot,
+                      n: tmpname.TmpNaming) -> Result<TmpFile, tmproot.TmpError> [fs, rand]
+    todo("tempdir-nv.tmpfile.create_file_in")
+
+// A new empty file inside a temporary directory.
+//
+// Its root is the directory's root, so closing the directory removes
+// the file and closing the file does not disturb the directory.
+//
+// ```novo
+// use tmproot
+// use tmpname
+// use tmpdir
+// use tmpfile
+//
+// fn main() [io, fs, rand]
+//     let r = tmproot.root_unchecked("/tmp")
+//     match tmpdir.create_dir_in(r, tmpname.naming())
+//         Err(e) => println(e.message())
+//         Ok(d)  =>
+//             match tmpfile.create_file_under(d, tmpname.naming())
+//                 Ok(f)  => println(tmpfile.file_path(f))
+//                 Err(e) => println(e.message())
+// ```
+pub fn create_file_under(d: tmpdir.TmpDir,
+                         n: tmpname.TmpNaming) -> Result<TmpFile, tmproot.TmpError> [fs, rand]
+    todo("tempdir-nv.tmpfile.create_file_under")
+
+// A file at a name the caller chose, inside a temporary directory,
+// created exclusively.
+//
+// No token and no retry: the name is the point, and a name already
+// taken is an error rather than a reason to draw again.  The call a
+// fixture that needs `Cargo.toml` or `novo.toml` makes.
+//
+// ```novo
+// use tmproot
+// use tmpname
+// use tmpdir
+// use tmpfile
+//
+// fn main() [io, fs, rand]
+//     let r = tmproot.root_unchecked("/tmp")
+//     match tmpdir.create_dir_in(r, tmpname.naming())
+//         Err(e) => println(e.message())
+//         Ok(d)  =>
+//             match tmpfile.make_child_file(d, "novo.toml")
+//                 Ok(f)  => println(tmpfile.file_path(f))
+//                 Err(e) => println(e.message())
+// ```
+pub fn make_child_file(d: tmpdir.TmpDir, name: Str) -> Result<TmpFile, tmproot.TmpError> [fs]
+    todo("tempdir-nv.tmpfile.make_child_file")
+
+// The file's path.
+//
+// ```novo
+// use tmproot
+// use tmpfile
+//
+// fn main() [io]
+//     let f = TmpFile { root: tmproot.root_unchecked("/tmp"),
+//                       path: "/tmp/novo-a2f4k9.json",
+//                       disposition: TmpRemoveOnClose }
+//     println(tmpfile.file_path(f))
+// ```
+pub fn file_path(f: TmpFile) -> Str []
+    todo("tempdir-nv.tmpfile.file_path")
+
+// Write text to the file, replacing what is there.
+//
+// The convenience that covers most fixtures, so a test that needs one
+// file with one string in it is one line and not four.
+//
+// ```novo
+// use tmproot
+// use tmpfile
+//
+// fn main() [io, fs]
+//     let f = TmpFile { root: tmproot.root_unchecked("/tmp"),
+//                       path: "/tmp/novo-a2f4k9.json",
+//                       disposition: TmpRemoveOnClose }
+//     match tmpfile.write_str(f, "{}")
+//         Some(e) => println(e.message())
+//         None    => println("written")
+// ```
+pub fn write_str(f: TmpFile, content: Str) -> ?tmproot.TmpError [fs]
+    todo("tempdir-nv.tmpfile.write_str")
+
+// Write bytes to the file, replacing what is there.
+//
+// ```novo
+// use tmproot
+// use tmpfile
+// use std.bytes
+//
+// fn main() [io, fs]
+//     let f = TmpFile { root: tmproot.root_unchecked("/tmp"),
+//                       path: "/tmp/novo-a2f4k9.bin",
+//                       disposition: TmpRemoveOnClose }
+//     match tmpfile.write_bytes(f, bytes.from_byte_list([0, 1, 2]))
+//         Some(e) => println(e.message())
+//         None    => println("written")
+// ```
+pub fn write_bytes(f: TmpFile, content: Bytes) -> ?tmproot.TmpError [fs]
+    todo("tempdir-nv.tmpfile.write_bytes")
+
+// The file's contents as text.
+//
+// ```novo
+// use tmproot
+// use tmpfile
+//
+// fn main() [io, fs]
+//     let f = TmpFile { root: tmproot.root_unchecked("/tmp"),
+//                       path: "/tmp/novo-a2f4k9.json",
+//                       disposition: TmpRemoveOnClose }
+//     match tmpfile.read_str(f)
+//         Ok(text) => println(text)
+//         Err(e)   => println(e.message())
+// ```
+pub fn read_str(f: TmpFile) -> Result<Str, tmproot.TmpError> [fs]
+    todo("tempdir-nv.tmpfile.read_str")
+
+// Open the file for reading, and hand the caller the handle.
+//
+// The standard library's `File`, which the caller closes.  This package
+// does not hold descriptors; the module comment says why.
+//
+// ```novo
+// use tmproot
+// use tmpfile
+//
+// fn main() [io, fs]
+//     let f = TmpFile { root: tmproot.root_unchecked("/tmp"),
+//                       path: "/tmp/novo-a2f4k9.json",
+//                       disposition: TmpRemoveOnClose }
+//     match tmpfile.open_read(f)
+//         Ok(h)  => println("${h.fd}")
+//         Err(e) => println(e.message())
+// ```
+pub fn open_read(f: TmpFile) -> Result<File, tmproot.TmpError> [fs]
+    todo("tempdir-nv.tmpfile.open_read")
+
+// Open the file for writing, and hand the caller the handle.
+//
+// ```novo
+// use tmproot
+// use tmpfile
+//
+// fn main() [io, fs]
+//     let f = TmpFile { root: tmproot.root_unchecked("/tmp"),
+//                       path: "/tmp/novo-a2f4k9.json",
+//                       disposition: TmpRemoveOnClose }
+//     match tmpfile.open_write(f)
+//         Ok(h)  => println("${h.fd}")
+//         Err(e) => println(e.message())
+// ```
+pub fn open_write(f: TmpFile) -> Result<File, tmproot.TmpError> [fs]
+    todo("tempdir-nv.tmpfile.open_write")
+
+// The same file, with `close` set to remove nothing.
+//
+// A new value, for the same reason `tmpdir.persist` answers one.
+//
+// ```novo
+// use tmproot
+// use tmpfile
+//
+// fn main() [io]
+//     let f = TmpFile { root: tmproot.root_unchecked("/tmp"),
+//                       path: "/tmp/novo-a2f4k9.json",
+//                       disposition: TmpRemoveOnClose }
+//     println("${tmpfile.keeps(tmpfile.persist(f))}")
+// ```
+pub fn persist(f: TmpFile) -> TmpFile []
+    todo("tempdir-nv.tmpfile.persist")
+
+// Move the file to a destination the caller names.
+//
+// A rename, which is atomic on one filesystem — so this is also how a
+// program writes a file safely: write the whole thing to a temporary
+// beside the destination, then `persist_as` over it, and a reader never
+// sees a half-written file.  That is a real use of this package outside
+// tests, and the reason `persist_as` replaces the destination rather
+// than refusing when it exists.
+//
+// ```novo
+// use tmproot
+// use tmpfile
+//
+// fn main() [io, fs]
+//     let f = TmpFile { root: tmproot.root_unchecked("/tmp"),
+//                       path: "/tmp/novo-a2f4k9.json",
+//                       disposition: TmpRemoveOnClose }
+//     match tmpfile.persist_as(f, "target/config.json")
+//         Ok(p)  => println(p)
+//         Err(e) => println(e.message())
+// ```
+pub fn persist_as(f: TmpFile, dest: Str) -> Result<Str, tmproot.TmpError> [fs]
+    todo("tempdir-nv.tmpfile.persist_as")
+
+// Whether `close` will leave the file where it is.
+//
+// ```novo
+// use tmproot
+// use tmpfile
+//
+// fn main() [io]
+//     let f = TmpFile { root: tmproot.root_unchecked("/tmp"),
+//                       path: "/tmp/novo-a2f4k9.json",
+//                       disposition: TmpKeepOnClose }
+//     println("${tmpfile.keeps(f)}")
+// ```
+pub fn keeps(f: TmpFile) -> Bool []
+    todo("tempdir-nv.tmpfile.keeps")
+
+// Remove the file, or not, according to the disposition.
+//
+// Total, like `tmpdir.close`: `None` when there is nothing left at the
+// path, whether this removed it or it was never there.
+//
+// ```novo
+// use tmproot
+// use tmpfile
+//
+// fn main() [io, fs]
+//     let f = TmpFile { root: tmproot.root_unchecked("/tmp"),
+//                       path: "/tmp/novo-a2f4k9.json",
+//                       disposition: TmpRemoveOnClose }
+//     match tmpfile.close(f)
+//         Some(e) => println(e.message())
+//         None    => println("gone")
+// ```
+pub fn close(f: TmpFile) -> ?tmproot.TmpError [fs]
+    todo("tempdir-nv.tmpfile.close")
+
+// Whether anything is still on disk at the file's path.
+//
+// ```novo
+// use tmproot
+// use tmpfile
+//
+// fn main() [io, fs]
+//     let f = TmpFile { root: tmproot.root_unchecked("/tmp"),
+//                       path: "/tmp/novo-a2f4k9.json",
+//                       disposition: TmpRemoveOnClose }
+//     println("${tmpfile.exists(f)}")
+// ```
+pub fn exists(f: TmpFile) -> Bool [fs]
+    todo("tempdir-nv.tmpfile.exists")
+
+// Create a temporary file, run `body` with it, remove it, answer what
+// `body` answered.
+//
+// `tmpdir.with_temp_dir`'s shape for one file, and the same two
+// concrete rows for the same reason.
+//
+// ```novo
+// use tmpname
+// use tmpfile
+//
+// fn fill(f: TmpFile) -> Bool [fs]
+//     match tmpfile.write_str(f, "hello")
+//         Some(_) => false
+//         None    => true
+//
+// fn main() [io, fs, rand]
+//     match tmpfile.with_temp_file(tmpname.prefixed("novo-"), fill)
+//         Ok(v)  => println("${v}")
+//         Err(e) => println(e.message())
+// ```
+pub fn with_temp_file<T>(n: tmpname.TmpNaming,
+                         body: fn(TmpFile) -> T [fs]) -> Result<T, tmproot.TmpError> [fs, io, rand]
+    todo("tempdir-nv.tmpfile.with_temp_file")
+
+// `with_temp_file` for a body that also prints, pipes or runs a
+// subprocess.
+//
+// ```novo
+// use tmpname
+// use tmpfile
+//
+// fn show(f: TmpFile) -> Int [fs, io]
+//     println(tmpfile.file_path(f))
+//     0
+//
+// fn main() [io, fs, rand]
+//     match tmpfile.with_temp_file_io(tmpname.prefixed("novo-"), show)
+//         Ok(v)  => println("${v}")
+//         Err(e) => println(e.message())
+// ```
+pub fn with_temp_file_io<T>(n: tmpname.TmpNaming,
+                            body: fn(TmpFile) -> T [fs, io]) -> Result<T, tmproot.TmpError> [fs, io, rand]
+    todo("tempdir-nv.tmpfile.with_temp_file_io")
+
+// Write `content` to `dest` through a temporary file beside it, so a
+// reader never sees a partial write.
+//
+// The durable-replace idiom, written once: create a temporary in
+// `dest`'s own directory, write it, flush it, rename it over `dest`.
+// Same-directory is not an optimisation — a rename does not cross a
+// filesystem, and a temporary in `/tmp` cannot be renamed onto a file
+// on another mount.
+//
+// ```novo
+// use tmpfile
+//
+// fn main() [io, fs, rand]
+//     match tmpfile.replace_atomically("target/config.json", "{}")
+//         Some(e) => println(e.message())
+//         None    => println("replaced")
+// ```
+pub fn replace_atomically(dest: Str, content: Str) -> ?tmproot.TmpError [fs, rand]
+    todo("tempdir-nv.tmpfile.replace_atomically")

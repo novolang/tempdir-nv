@@ -1,0 +1,320 @@
+// tmpclean.nv — the recursive removal, planned before it is performed.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE STANDARD LIBRARY HAS NO RECURSIVE DELETE.  `fs.delete` removes a
+// file or an EMPTY directory, so a temporary-directory package has to
+// write the walk itself, and that walk is the most dangerous function
+// any test library ships.  Two decisions contain it.
+//
+// FIRST: THE PLAN IS A VALUE.  `plan_removal` walks the tree and
+// answers the list of entries it would remove, deepest first, with
+// each entry's kind.  `remove_planned` performs exactly that list and
+// nothing else.  A caller can print the plan, assert on it in a test,
+// or refuse it — and the two halves have different effect rows in the
+// obvious direction: planning reads, performing writes.  Every defect
+// class here (a link followed out of the tree, a parent removed before
+// its children, a path that moved between the walk and the unlink) is
+// something a reader can now see in a list rather than reconstruct
+// from a stack trace.
+//
+// SECOND: A LINK IS REMOVED, NEVER ENTERED.  `TmpEntrySymlink` is its
+// own kind, the walk does not descend into one, and the removal
+// unlinks the link itself.  A symbolic link inside a fixture pointing
+// at a person's home directory is the whole reason this package could
+// otherwise be the worst thing in their test suite.
+//
+// AND THE ROOT IS CARRIED THROUGH BOTH.  Every function here takes a
+// `TmpRoot`; a path outside it is `TmpOutsideRoot` and nothing is
+// touched.  `remove_planned` re-checks each entry against the root
+// rather than trusting the plan it was handed, because a plan is a
+// value a caller can build by hand.
+//
+// A REMOVAL DOES NOT STOP AT THE FIRST FAILURE.  `TmpRemoveReport`
+// carries what went and what did not.  A fixture teardown that
+// abandoned the rest of the tree on one busy file would leak far more
+// than it cleaned, and a test that fails because teardown raised tells
+// a person about the wrong thing.
+
+use tmproot
+use tmpname
+
+// What one entry in a removal plan is.
+//
+// The kind is recorded at PLAN time, from the walk that saw it, so
+// `remove_planned` does not have to ask the filesystem a second time —
+// and so a caller reading a plan can see a link for what it is.
+pub enum TmpEntryKind
+    // A regular file, a device node, a socket, a fifo: anything that
+    // `fs.delete` removes in one call and that has no children.
+    TmpEntryFile
+    // A directory.  Always appears AFTER everything under it in a
+    // plan, because that is the only order in which the removals can
+    // succeed.
+    TmpEntryDir
+    // A symbolic link.  Removed as itself; never entered.  Its own
+    // kind rather than a flag on `TmpEntryFile`, because "did the walk
+    // follow this?" is the question a reader of a plan is asking.
+    TmpEntrySymlink
+
+// One thing to remove, and what it is.
+pub struct TmpEntry
+    // Absolute, and under the root the plan was made against.
+    path: Str
+    kind: TmpEntryKind
+    // How far below the root it sits; the root itself is 0.  Carried
+    // so a plan can be rendered as a tree without re-parsing the
+    // paths, and so `depth_limit` has something to compare.
+    depth: Int
+
+// What a removal actually did.
+//
+// Both halves, always.  A teardown that reports only failures cannot
+// tell "nothing to do" from "the walk never ran", and that difference
+// is what a leaked fixture looks like from the outside.
+pub struct TmpRemoveReport
+    // Paths removed, by kind.
+    files: Int
+    dirs: Int
+    links: Int
+    // Paths that could not be removed, in the order the walk reached
+    // them, with the reason beside each.
+    failed: [TmpFailure]
+
+// One path a removal could not remove.
+pub struct TmpFailure
+    path: Str
+    // The fault, so a caller can separate a busy file from a path that
+    // left the root.
+    why: tmproot.TmpError
+
+// Plan the removal of `path`, which must be under `root`.
+//
+// The walk reads directories and stats entries; it removes nothing.
+// Entries come back DEEPEST FIRST, with `path` itself last, which is
+// the order `remove_planned` performs and the order `fs.delete`
+// requires.
+//
+// `TmpOutsideRoot` when `path` is not under `root`.  An absent `path`
+// is not an error: the plan is empty, because a teardown that runs
+// twice should be quiet the second time.
+//
+// ```novo
+// use tmproot
+// use tmpclean
+// use std.list
+//
+// fn main() [io, fs]
+//     let r = tmproot.root_unchecked("/tmp")
+//     match tmpclean.plan_removal(r, "/tmp/fixture-a2f4k9")
+//         Ok(plan) => println("${list.len(plan)}")
+//         Err(e)   => println(e.message())
+// ```
+pub fn plan_removal(root: tmproot.TmpRoot, path: Str) -> Result<[TmpEntry], tmproot.TmpError> [fs]
+    todo("tempdir-nv.tmpclean.plan_removal")
+
+// Plan the removal, stopping the walk at `max_depth` below the root.
+//
+// The guard against a tree that is deeper than it should be —
+// a runaway test, or a directory somebody mounted inside a fixture.
+// The plan comes back truncated and `plan_complete` says so, rather
+// than the walk running until it runs out of stack.
+//
+// ```novo
+// use tmproot
+// use tmpclean
+// use std.list
+//
+// fn main() [io, fs]
+//     let r = tmproot.root_unchecked("/tmp")
+//     match tmpclean.plan_removal_to_depth(r, "/tmp/fixture-a2f4k9", 4)
+//         Ok(plan) => println("${list.len(plan)}")
+//         Err(e)   => println(e.message())
+// ```
+pub fn plan_removal_to_depth(root: tmproot.TmpRoot, path: Str,
+                             max_depth: Int) -> Result<[TmpEntry], tmproot.TmpError> [fs]
+    todo("tempdir-nv.tmpclean.plan_removal_to_depth")
+
+// Whether a plan reached the bottom of every branch.
+//
+// False when `plan_removal_to_depth` cut one off, which is the one
+// case where performing the plan leaves a non-empty directory behind
+// and the directory removal at the end fails for a reason that is not
+// the machine's fault.
+//
+// ```novo
+// use tmpclean
+//
+// fn main() [io]
+//     let done = tmpclean.plan_complete([])
+//     println("${done}")
+// ```
+pub fn plan_complete(plan: [TmpEntry]) -> Bool []
+    todo("tempdir-nv.tmpclean.plan_complete")
+
+// Perform exactly this plan, and answer what happened.
+//
+// Each entry is re-checked against `root` before it is touched, so a
+// hand-built plan cannot make this delete something outside it.  The
+// walk continues past a failure; the failures are in the report.
+//
+// ```novo
+// use tmproot
+// use tmpclean
+//
+// fn main() [io, fs]
+//     let r = tmproot.root_unchecked("/tmp")
+//     let rep = tmpclean.remove_planned(r, [])
+//     println("${rep.files}")
+// ```
+pub fn remove_planned(root: tmproot.TmpRoot, plan: [TmpEntry]) -> TmpRemoveReport [fs]
+    todo("tempdir-nv.tmpclean.remove_planned")
+
+// Plan and perform, which is what `tmpdir.close` calls.
+//
+// The convenience over the two halves, and the one almost every caller
+// uses.  `Err` only for a refusal that happens before anything is
+// removed — a path outside the root, an unreadable root.  Anything
+// that fails during the removal is in the report.
+//
+// ```novo
+// use tmproot
+// use tmpclean
+//
+// fn main() [io, fs]
+//     let r = tmproot.root_unchecked("/tmp")
+//     match tmpclean.remove_tree(r, "/tmp/fixture-a2f4k9")
+//         Ok(rep) => println("${rep.dirs}")
+//         Err(e)  => println(e.message())
+// ```
+pub fn remove_tree(root: tmproot.TmpRoot,
+                   path: Str) -> Result<TmpRemoveReport, tmproot.TmpError> [fs]
+    todo("tempdir-nv.tmpclean.remove_tree")
+
+// Remove the CONTENTS of a directory and leave the directory.
+//
+// What a fixture that is reused between cases wants, and what a root a
+// caller does not own must have: a `root_at("/var/tmp")` teardown may
+// empty what it made and may not remove `/var/tmp`.
+//
+// ```novo
+// use tmproot
+// use tmpclean
+//
+// fn main() [io, fs]
+//     let r = tmproot.root_unchecked("/tmp")
+//     match tmpclean.empty_tree(r, "/tmp/fixture-a2f4k9")
+//         Ok(rep) => println("${rep.files}")
+//         Err(e)  => println(e.message())
+// ```
+pub fn empty_tree(root: tmproot.TmpRoot,
+                  path: Str) -> Result<TmpRemoveReport, tmproot.TmpError> [fs]
+    todo("tempdir-nv.tmpclean.empty_tree")
+
+// Whether the report records no failure.
+//
+// ```novo
+// use tmpclean
+//
+// fn main() [io]
+//     let rep = TmpRemoveReport { files: 0, dirs: 0, links: 0, failed: [] }
+//     println("${tmpclean.report_clean(rep)}")
+// ```
+pub fn report_clean(rep: TmpRemoveReport) -> Bool []
+    todo("tempdir-nv.tmpclean.report_clean")
+
+// Everything removed, of every kind.
+//
+// ```novo
+// use tmpclean
+//
+// fn main() [io]
+//     let rep = TmpRemoveReport { files: 2, dirs: 1, links: 0, failed: [] }
+//     println("${tmpclean.report_total(rep)}")
+// ```
+pub fn report_total(rep: TmpRemoveReport) -> Int []
+    todo("tempdir-nv.tmpclean.report_total")
+
+// The report as one line for a test log: what went, and the first
+// path that did not.
+//
+// One line rather than a paragraph, because a teardown that is fine
+// should cost one line and a teardown that is not should still fit in
+// a failure message beside the real assertion.
+//
+// ```novo
+// use tmpclean
+//
+// fn main() [io]
+//     let rep = TmpRemoveReport { files: 2, dirs: 1, links: 0, failed: [] }
+//     println(tmpclean.report_line(rep))
+// ```
+pub fn report_line(rep: TmpRemoveReport) -> Str []
+    todo("tempdir-nv.tmpclean.report_line")
+
+// The first failure, for a caller that wants a `?TmpError` rather than
+// a report.
+//
+// ```novo
+// use tmpclean
+//
+// fn main() [io]
+//     let rep = TmpRemoveReport { files: 0, dirs: 0, links: 0, failed: [] }
+//     match tmpclean.first_failure(rep)
+//         Some(e) => println(e.message())
+//         None    => println("clean")
+// ```
+pub fn first_failure(rep: TmpRemoveReport) -> ?tmproot.TmpError []
+    todo("tempdir-nv.tmpclean.first_failure")
+
+// A plan rendered one entry per line, deepest first, each line the
+// kind and the path.
+//
+// For `--verbose` teardown and for the test that pins the order, which
+// is the property the whole module depends on.
+//
+// ```novo
+// use tmpclean
+//
+// fn main() [io]
+//     println(tmpclean.render_plan([]))
+// ```
+pub fn render_plan(plan: [TmpEntry]) -> Str []
+    todo("tempdir-nv.tmpclean.render_plan")
+
+// The depth a plan stops at when no ceiling is given: 64.
+//
+// Not a tuning knob so much as a statement that the walk terminates.
+// A temporary tree deeper than 64 is a test that has gone wrong, and
+// finding out from a truncated plan beats finding out from a stack.
+//
+// ```novo
+// use tmpclean
+//
+// fn main() [io]
+//     println("${tmpclean.default_depth_limit()}")
+// ```
+pub fn default_depth_limit() -> Int []
+    todo("tempdir-nv.tmpclean.default_depth_limit")
+
+// Every directory under `root` whose name this naming policy could
+// have produced, with nothing removed.
+//
+// The first half of a sweeper: a long-running build machine
+// accumulates fixtures from runs that were killed, and the way to
+// clean them is to list what matches, show it, and then remove it —
+// never to remove what a glob matched on the way past.
+//
+// ```novo
+// use tmproot
+// use tmpname
+// use tmpclean
+// use std.list
+//
+// fn main() [io, fs]
+//     let r = tmproot.root_unchecked("/tmp")
+//     let found = tmpclean.leaked_under(r, tmpname.prefixed("novo-"))
+//     println("${list.len(found)}")
+// ```
+pub fn leaked_under(root: tmproot.TmpRoot, n: tmpname.TmpNaming) -> [Str] [fs]
+    todo("tempdir-nv.tmpclean.leaked_under")

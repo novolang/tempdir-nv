@@ -1,0 +1,372 @@
+// tmproot.nv — the directory this package created, and what that
+// licenses it to delete.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A TEMPORARY-FILE LIBRARY IS A DELETE LOOP WITH A NICE NAME ON IT.
+// Everything else it does — pick a name, create a directory, hand back
+// a path — is one call.  The part that can destroy a person's work is
+// the removal, and the removal is recursive, which means the whole
+// question is: what is this allowed to delete?
+//
+// `TmpRoot` is the answer, as a type.  A `TmpRoot` is a directory that
+// EXISTS and that this package is entitled to remove things under —
+// either the platform temp root, or one the caller named on purpose.
+// Every path this package hands out is built from one, every removal
+// takes one, and a removal whose target is not under its root is
+// refused by name (`TmpOutsideRoot`) rather than attempted.  There is
+// no function here that deletes a path on its own say-so.
+//
+// The check is TEXTUAL and this module says so out loud, because the
+// alternative is worse than the limitation.  `contains` normalises two
+// strings and compares them; it does not resolve symbolic links, so a
+// symlink planted inside a temp directory pointing at `$HOME` is not
+// something this can see.  `tmpclean` is where that is handled — it
+// never follows a link, it removes the link itself — and the division
+// is deliberate: the cheap check belongs to a pure function a caller
+// can test, and the expensive one belongs to the walk that has the
+// directory open anyway.
+//
+// `/tmp` IS A SYMLINK ON MACOS, to `/private/tmp`, and `env.cwd`-style
+// realpath answers differ from the `TMPDIR` the environment carries.
+// So `system_root` reports the path the platform gave it, unresolved,
+// and `contains` compares what it was given.  A caller that mixes a
+// resolved path with an unresolved one gets a refusal rather than a
+// deletion, which is the failure mode to have.
+
+// A directory this package may create things in and remove things
+// under.
+//
+// `path` is absolute and carries no trailing separator, so
+// `join(root, name)` is one separator and never two.  The value is
+// small and copyable on purpose: it is passed to every removal, and a
+// capability that is awkward to pass gets passed around rather than
+// through.
+pub struct TmpRoot
+    path: Str
+
+// Everything that can go wrong, as one enum.
+//
+// Every variant carries the path it is about.  A temporary-file
+// failure with no path in it is unactionable — "permission denied" in
+// a test log with no directory named is a half-hour of guessing — and
+// the enum is the place to make that impossible rather than the
+// message formatter.
+pub enum TmpError
+    // No temp root could be determined: `TMPDIR` is unset and the
+    // platform fallback does not exist.  Rare, and real inside a
+    // container built from scratch.
+    TmpRootUnset
+    // The path names something that is not a directory, or that this
+    // process cannot enter.
+    TmpRootNotDirectory(path: Str)
+    // The root exists but this process cannot create in it.  Separate
+    // from `TmpRootNotDirectory` because the repair is different: one
+    // is a wrong path, the other is a mount or a mode.
+    TmpRootNotWritable(path: Str)
+    // A create failed for a reason the platform did not distinguish.
+    TmpCreateFailed(path: Str)
+    // The naming policy ran out of attempts without finding a free
+    // name.  `attempts` is what it tried, so a caller can tell a
+    // genuinely full namespace from a token that is one character
+    // long.
+    TmpNameExhausted(attempts: Int)
+    // A name is not usable as a single path component: it is empty, it
+    // is `.` or `..`, or it contains a separator.  Refused before it
+    // reaches the filesystem, because a `child(d, "../../etc")` that
+    // reached the filesystem would be the interesting bug.
+    TmpBadName(name: Str)
+    // The path is not under the root, so nothing was done to it.  Both
+    // are named, because the interesting half is usually which root
+    // the caller thought it was in.
+    TmpOutsideRoot(root: Str, path: Str)
+    // A removal failed at this path.  The walk continues past one —
+    // see `tmpclean.TmpRemoveReport` — so this variant appears when a
+    // caller asked for the first failure rather than the report.
+    TmpRemoveFailed(path: Str)
+    // A `persist_to` could not move the tree to its destination.  Both
+    // paths, because the usual cause is that the destination is on
+    // another filesystem and rename does not cross one.
+    TmpPersistFailed(from: Str, to: Str)
+    // The value was closed already.  Closing twice is not an error a
+    // caller has to prevent — `close` is total — but the second close
+    // reports it rather than silently deleting whatever now lives at
+    // that path.
+    TmpAlreadyClosed(path: Str)
+
+// The sentence a `Result<_, TmpError>` carries.
+//
+// SPEC § 3.4 admits a type as a `Result`'s error type only when it
+// implements `Error`, so this impl is what lets every function in the
+// package name its own refusal instead of returning `Result<_, Str>`
+// and losing the variant a caller wanted to match on.
+//
+// Every message names the path.  `TmpOutsideRoot` names both, in the
+// order "root, then path", because the reader's next question is
+// always which root the value thought it had.
+//
+// ```novo
+// use tmproot
+//
+// fn main() [io, fs]
+//     match tmproot.root_at("/does/not/exist")
+//         Ok(_)  => println("usable")
+//         Err(e) => println(e.message())
+// ```
+impl Error for TmpError
+    // Panics with `not implemented` until the bodies land.
+    fn message(self) -> Str
+        todo("tempdir-nv.tmproot.TmpError.message")
+
+// The platform temp root: `TMPDIR` when the environment sets it,
+// otherwise the platform's fallback.
+//
+// `[io]` is the environment read and `[fs]` is the existence check.
+// This is the one function in the package that consults the
+// environment, and it is separate from every create so that a caller
+// who wants a root under their own control never pays for it — which
+// a test running in a sandbox that grants no environment actually
+// needs.
+//
+// The path is NOT resolved through symbolic links; see the module
+// comment.
+//
+// ```novo
+// use tmproot
+//
+// fn main() [io, fs]
+//     match tmproot.system_root()
+//         Ok(r)  => println(tmproot.root_path(r))
+//         Err(_) => println("no temp root")
+// ```
+pub fn system_root() -> Result<TmpRoot, TmpError> [fs, io]
+    todo("tempdir-nv.tmproot.system_root")
+
+// The platform temp root, or a caller's fallback when there is none.
+//
+// For a program that would rather carry on in a directory it chose
+// than stop because a container has no `TMPDIR`.
+//
+// ```novo
+// use tmproot
+//
+// fn main() [io, fs]
+//     let r = tmproot.system_root_or("/var/tmp")
+//     println(tmproot.root_path(r))
+// ```
+pub fn system_root_or(fallback: Str) -> TmpRoot [fs, io]
+    todo("tempdir-nv.tmproot.system_root_or")
+
+// A root the caller names, checked: it exists, it is a directory, and
+// this process can create in it.
+//
+// The check is what makes the value a capability rather than a string
+// with a type on it.  A build that puts its scratch space under
+// `target/tmp` uses this, and gets the refusal at the point it named
+// the directory rather than at the first create.
+//
+// ```novo
+// use tmproot
+//
+// fn main() [io, fs]
+//     match tmproot.root_at("/var/tmp")
+//         Ok(_)  => println("usable")
+//         Err(_) => println("not usable")
+// ```
+pub fn root_at(path: Str) -> Result<TmpRoot, TmpError> [fs]
+    todo("tempdir-nv.tmproot.root_at")
+
+// A root the caller names, created if it is absent, with every missing
+// parent.
+//
+// The shape a fixture directory under a build tree wants: the first
+// run makes it and every later run finds it.
+//
+// ```novo
+// use tmproot
+//
+// fn main() [io, fs]
+//     match tmproot.root_make("target/tmp")
+//         Ok(_)  => println("ready")
+//         Err(_) => println("could not make it")
+// ```
+pub fn root_make(path: Str) -> Result<TmpRoot, TmpError> [fs]
+    todo("tempdir-nv.tmproot.root_make")
+
+// A root from a path, with NO check at all.
+//
+// Deliberately public and deliberately blunt: a test of the path
+// arithmetic in this module needs a `TmpRoot` without a filesystem,
+// and the alternative — a hidden constructor plus a test-only feature
+// flag — is a worse trade than one function whose name says what it
+// skipped.  Nothing in this package is unsafe with an unchecked root,
+// because the creates still fail and the removals still refuse
+// anything outside it.
+//
+// ```novo
+// use tmproot
+//
+// fn main() [io]
+//     println(tmproot.root_path(tmproot.root_unchecked("/tmp")))
+// ```
+pub fn root_unchecked(path: Str) -> TmpRoot []
+    todo("tempdir-nv.tmproot.root_unchecked")
+
+// The root's path, absolute, with no trailing separator.
+//
+// ```novo
+// use tmproot
+//
+// fn main() [io]
+//     println(tmproot.root_path(tmproot.root_unchecked("/tmp/")))
+// ```
+pub fn root_path(r: TmpRoot) -> Str []
+    todo("tempdir-nv.tmproot.root_path")
+
+// `root/name`, with exactly one separator.
+//
+// Does not check `name`; `child_path` is the checked version and is
+// what everything in `tmpdir` and `tmpfile` calls.
+//
+// ```novo
+// use tmproot
+//
+// fn main() [io]
+//     println(tmproot.join(tmproot.root_unchecked("/tmp"), "fixture-1"))
+// ```
+pub fn join(r: TmpRoot, name: Str) -> Str []
+    todo("tempdir-nv.tmproot.join")
+
+// `parent/name`, with `name` checked as a single path component.
+//
+// `TmpBadName` for an empty name, for `.` and `..`, and for anything
+// carrying a separator — which is the whole escape route a caller-
+// supplied name has.
+//
+// ```novo
+// use tmproot
+//
+// fn main() [io]
+//     match tmproot.child_path("/tmp/fixture", "../etc")
+//         Ok(p)  => println(p)
+//         Err(_) => println("refused")
+// ```
+pub fn child_path(parent: Str, name: Str) -> Result<Str, TmpError> []
+    todo("tempdir-nv.tmproot.child_path")
+
+// Whether `path` is the root itself or lies under it.
+//
+// Textual: both sides are normalised — repeated separators collapsed,
+// `.` segments dropped, `..` segments resolved against what precedes
+// them, trailing separator removed — and then compared segment by
+// segment, so `/tmp/ab` is not under `/tmp/a`.  Symbolic links are NOT
+// resolved, and the module comment says why.
+//
+// A relative path is never contained: there is nothing to compare it
+// against, and answering `true` for one would be the defect this
+// function exists to prevent.
+//
+// ```novo
+// use tmproot
+//
+// fn main() [io]
+//     let r = tmproot.root_unchecked("/tmp")
+//     let under = tmproot.contains(r, "/tmp/a/../b")
+//     println("${under}")
+// ```
+pub fn contains(r: TmpRoot, path: Str) -> Bool []
+    todo("tempdir-nv.tmproot.contains")
+
+// The normalisation `contains` compares with, published so a caller
+// can see what it did.
+//
+// Purely textual, and it does not touch the filesystem: `..` is
+// resolved against the preceding segment even when that segment is a
+// symbolic link, which is exactly where a textual answer and the
+// kernel's answer part company.
+//
+// ```novo
+// use tmproot
+//
+// fn main() [io]
+//     println(tmproot.normalise("/tmp//a/./b/../c/"))
+// ```
+pub fn normalise(path: Str) -> Str []
+    todo("tempdir-nv.tmproot.normalise")
+
+// Whether a path is absolute on this platform.
+//
+// ```novo
+// use tmproot
+//
+// fn main() [io]
+//     let abs = tmproot.is_absolute("relative/path")
+//     println("${abs}")
+// ```
+pub fn is_absolute(path: Str) -> Bool []
+    todo("tempdir-nv.tmproot.is_absolute")
+
+// The last component of a path, with no separator.
+//
+// ```novo
+// use tmproot
+//
+// fn main() [io]
+//     println(tmproot.base_name("/tmp/fixture-7a2f/data.json"))
+// ```
+pub fn base_name(path: Str) -> Str []
+    todo("tempdir-nv.tmproot.base_name")
+
+// Everything before the last component, with no trailing separator.
+//
+// ```novo
+// use tmproot
+//
+// fn main() [io]
+//     println(tmproot.parent_name("/tmp/fixture-7a2f/data.json"))
+// ```
+pub fn parent_name(path: Str) -> Str []
+    todo("tempdir-nv.tmproot.parent_name")
+
+// One line a person can act on, naming the path.
+//
+// ```novo
+// use tmproot
+//
+// fn main() [io]
+//     println(tmproot.error_text(TmpRootUnset))
+// ```
+pub fn error_text(e: TmpError) -> Str []
+    todo("tempdir-nv.tmproot.error_text")
+
+// The path a fault is about, or `""` for the two variants that carry
+// none.
+//
+// Published because a caller that logs errors wants the path in a
+// field rather than parsed back out of a sentence.
+//
+// ```novo
+// use tmproot
+//
+// fn main() [io]
+//     println(tmproot.error_path(TmpCreateFailed("/tmp/fixture-7a2f")))
+// ```
+pub fn error_path(e: TmpError) -> Str []
+    todo("tempdir-nv.tmproot.error_path")
+
+// Whether the fault says the caller asked for something impossible,
+// as opposed to the machine refusing.
+//
+// The split a harness acts on: a caller mistake is a test to fix and a
+// machine refusal is an environment to report.  `TmpBadName` and
+// `TmpOutsideRoot` are the caller's; the rest are the machine's.
+//
+// ```novo
+// use tmproot
+//
+// fn main() [io]
+//     let mine = tmproot.is_caller_fault(TmpBadName(".."))
+//     println("${mine}")
+// ```
+pub fn is_caller_fault(e: TmpError) -> Bool []
+    todo("tempdir-nv.tmproot.is_caller_fault")

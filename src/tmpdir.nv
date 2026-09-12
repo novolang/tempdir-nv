@@ -1,0 +1,475 @@
+// tmpdir.nv — a temporary directory, in a language with no
+// destructors.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE LOAD-BEARING DECISION: `TmpDir` CARRIES ITS OWN DISPOSITION, AND
+// `close` IS TOTAL.
+//
+// Rust's `TempDir` works because `Drop` runs whatever happens, and
+// `into_path` works because it CONSUMES the value so the drop cannot
+// run afterwards.  Novo has neither: no destructor runs at the end of a
+// scope, and nothing stops a caller from using a value after it has
+// been closed.  Copying the API without the two mechanisms that make it
+// safe would produce something that looks like tempfile and leaks.
+//
+// So the mechanism moves into the value.  A `TmpDir` holds a
+// `TmpDisposition`, `persist` answers a NEW `TmpDir` whose disposition
+// is `TmpKeepOnClose`, and `close` reads the field: it removes the tree
+// or it does not.  `persist` is therefore not "cancel the destructor",
+// which is a thing this language cannot express — it is an ordinary
+// value change, and a caller who ignores the returned value has
+// persisted nothing, which is exactly the semantics of ignoring the
+// result of any other pure function.
+//
+// AND `close` NEVER FAILS.  It answers a `TmpRemoveReport`.  A teardown
+// that raises turns a passing test red for a reason that is not the
+// test's, and a teardown that raises inside a failing test replaces the
+// real failure with its own.  What the caller does with the report is
+// the caller's policy; `close_report_ok` is the one-line version.
+//
+// THE TWO SHAPES, AND WHY BOTH.  `create_dir` + `close` is the
+// primitive: it composes, it survives an early return, and it is what a
+// harness with its own setup and teardown hooks needs.
+// `with_temp_dir(naming, named_fn)` is the shape that cannot be
+// forgotten: the directory is created, the function runs, the tree is
+// removed whether the function returned or panicked.  Neither is
+// sufficient alone — the callback cannot express a fixture that
+// outlives one function, and the pair cannot stop a person forgetting
+// the second half — so the package publishes both and the README says
+// which to reach for.
+//
+// WHY THE CALLBACK FAMILY IS FINITE.  A function-typed PARAMETER cannot
+// bind an effect parameter: SPEC § 5.6 gives effect parameters to
+// traits, and a free function binds one only through a trait bound
+// (`fn f<S: Read[e]>(…) [e]`).  `fn(TmpDir) -> T [e]` is not something
+// that can be written.  So the rows are concrete and there are two of
+// them — `[fs]` for a body that only uses the directory, `[fs, io]` for
+// one that also prints or shells out — chosen because they cover a test
+// body and a build step.  A body that needs `[net]` uses `create_dir`
+// and `close` directly, which is why the primitive is published first.
+// The alternative, a one-method trait the caller implements per test
+// body, costs a struct and an impl for every fixture and buys back only
+// the rows nobody asked for.
+
+use tmproot
+use tmpname
+use tmpclean
+
+// What `close` does with the tree.
+//
+// A field rather than a flag on the call, because the decision is made
+// where the directory is created or persisted and acted on somewhere
+// else entirely — usually in a teardown that has no idea why.
+pub enum TmpDisposition
+    // `close` removes the tree.  The default, and what every
+    // constructor here produces.
+    TmpRemoveOnClose
+    // `close` removes nothing and reports zero of everything.  What
+    // `persist` sets, so a failing test can leave its fixture on disk
+    // for a person to look at.
+    TmpKeepOnClose
+
+// A temporary directory this package created.
+//
+// `root` travels with it, so `close` can refuse to remove a tree that
+// is not under the root it was made in — which is what makes a `TmpDir`
+// built by hand, or one whose path a caller rewrote, harmless.
+pub struct TmpDir
+    root: tmproot.TmpRoot
+    // Absolute, under `root`, no trailing separator.
+    path: Str
+    disposition: TmpDisposition
+
+// A new directory under the platform temp root.
+//
+// `[io]` is the environment read that finds the root; see
+// `tmproot.system_root`.  `[rand]` is the name token.  Create and name
+// are one step and retried on collision, up to the policy's attempts.
+//
+// ```novo
+// use tmpname
+// use tmpdir
+//
+// fn main() [io, fs, rand]
+//     match tmpdir.create_dir(tmpname.prefixed("novo-"))
+//         Ok(d)  => println(tmpdir.dir_path(d))
+//         Err(e) => println(e.message())
+// ```
+pub fn create_dir(n: tmpname.TmpNaming) -> Result<TmpDir, tmproot.TmpError> [fs, io, rand]
+    todo("tempdir-nv.tmpdir.create_dir")
+
+// A new directory under a root the caller already has.
+//
+// No `[io]`: the root was decided elsewhere, so this reads no
+// environment.  The call a test suite with its own scratch root makes,
+// and the reason `system_root` is a separate function.
+//
+// ```novo
+// use tmproot
+// use tmpname
+// use tmpdir
+//
+// fn main() [io, fs, rand]
+//     let r = tmproot.root_unchecked("/tmp")
+//     match tmpdir.create_dir_in(r, tmpname.naming())
+//         Ok(d)  => println(tmpdir.dir_path(d))
+//         Err(e) => println(e.message())
+// ```
+pub fn create_dir_in(r: tmproot.TmpRoot,
+                     n: tmpname.TmpNaming) -> Result<TmpDir, tmproot.TmpError> [fs, rand]
+    todo("tempdir-nv.tmpdir.create_dir_in")
+
+// A new directory inside an existing temporary one.
+//
+// The child's root is the PARENT'S root, not the parent directory, so
+// closing the parent removes the child and closing the child does not
+// confuse the parent.  A nested fixture — a repository with a
+// worktree, a cache with a lock directory — is this.
+//
+// ```novo
+// use tmproot
+// use tmpname
+// use tmpdir
+//
+// fn main() [io, fs, rand]
+//     let r = tmproot.root_unchecked("/tmp")
+//     match tmpdir.create_dir_in(r, tmpname.naming())
+//         Err(e) => println(e.message())
+//         Ok(d)  =>
+//             match tmpdir.create_sub_dir(d, tmpname.prefixed("inner-"))
+//                 Ok(c)  => println(tmpdir.dir_path(c))
+//                 Err(e) => println(e.message())
+// ```
+pub fn create_sub_dir(d: TmpDir,
+                      n: tmpname.TmpNaming) -> Result<TmpDir, tmproot.TmpError> [fs, rand]
+    todo("tempdir-nv.tmpdir.create_sub_dir")
+
+// A directory at a name the caller chose, under a temporary one.
+//
+// No token, no retry: the name is the caller's and the create fails if
+// it is taken.  For the fixture whose layout is the point — `src/`,
+// `tests/`, `.git/` — where a random name would defeat the purpose.
+//
+// ```novo
+// use tmproot
+// use tmpname
+// use tmpdir
+//
+// fn main() [io, fs, rand]
+//     let r = tmproot.root_unchecked("/tmp")
+//     match tmpdir.create_dir_in(r, tmpname.naming())
+//         Err(e) => println(e.message())
+//         Ok(d)  =>
+//             match tmpdir.make_child_dir(d, "src")
+//                 Ok(p)  => println(p)
+//                 Err(e) => println(e.message())
+// ```
+pub fn make_child_dir(d: TmpDir, name: Str) -> Result<Str, tmproot.TmpError> [fs]
+    todo("tempdir-nv.tmpdir.make_child_dir")
+
+// A directory at a relative path under a temporary one, with every
+// missing parent created.
+//
+// `"a/b/c"`, checked component by component, so no component may be
+// `..` and no component may carry a separator of its own.
+//
+// ```novo
+// use tmproot
+// use tmpname
+// use tmpdir
+//
+// fn main() [io, fs, rand]
+//     let r = tmproot.root_unchecked("/tmp")
+//     match tmpdir.create_dir_in(r, tmpname.naming())
+//         Err(e) => println(e.message())
+//         Ok(d)  =>
+//             match tmpdir.make_child_path(d, "src/lib/deep")
+//                 Ok(p)  => println(p)
+//                 Err(e) => println(e.message())
+// ```
+pub fn make_child_path(d: TmpDir, relative: Str) -> Result<Str, tmproot.TmpError> [fs]
+    todo("tempdir-nv.tmpdir.make_child_path")
+
+// The directory's path.
+//
+// ```novo
+// use tmproot
+// use tmpdir
+//
+// fn main() [io]
+//     let d = TmpDir { root: tmproot.root_unchecked("/tmp"),
+//                      path: "/tmp/novo-a2f4k9",
+//                      disposition: TmpRemoveOnClose }
+//     println(tmpdir.dir_path(d))
+// ```
+pub fn dir_path(d: TmpDir) -> Str []
+    todo("tempdir-nv.tmpdir.dir_path")
+
+// The path of a named entry inside the directory, checked.
+//
+// Creates nothing: this is the path a caller writes to.  `TmpBadName`
+// for anything that is not one usable component, which is the only
+// door a caller-supplied name has out of the tree.
+//
+// ```novo
+// use tmproot
+// use tmpdir
+//
+// fn main() [io]
+//     let d = TmpDir { root: tmproot.root_unchecked("/tmp"),
+//                      path: "/tmp/novo-a2f4k9",
+//                      disposition: TmpRemoveOnClose }
+//     match tmpdir.child(d, "input.json")
+//         Ok(p)  => println(p)
+//         Err(e) => println(e.message())
+// ```
+pub fn child(d: TmpDir, name: Str) -> Result<Str, tmproot.TmpError> []
+    todo("tempdir-nv.tmpdir.child")
+
+// The path of a relative location inside the directory, checked
+// component by component.
+//
+// ```novo
+// use tmproot
+// use tmpdir
+//
+// fn main() [io]
+//     let d = TmpDir { root: tmproot.root_unchecked("/tmp"),
+//                      path: "/tmp/novo-a2f4k9",
+//                      disposition: TmpRemoveOnClose }
+//     match tmpdir.child_at(d, "src/main.nv")
+//         Ok(p)  => println(p)
+//         Err(e) => println(e.message())
+// ```
+pub fn child_at(d: TmpDir, relative: Str) -> Result<Str, tmproot.TmpError> []
+    todo("tempdir-nv.tmpdir.child_at")
+
+// The same directory, with `close` set to remove nothing.
+//
+// A NEW VALUE.  The caller has to keep it, and a caller that writes
+// `tmpdir.persist(d)` and then closes the old `d` has removed the tree
+// — which is a mistake the compiler cannot catch here and the README
+// shows the right shape for.  It is still the honest spelling: there is
+// no destructor to cancel, so there is nothing for a statement-shaped
+// `persist(d)` to have done.
+//
+// ```novo
+// use tmproot
+// use tmpdir
+//
+// fn main() [io]
+//     let d = TmpDir { root: tmproot.root_unchecked("/tmp"),
+//                      path: "/tmp/novo-a2f4k9",
+//                      disposition: TmpRemoveOnClose }
+//     let kept = tmpdir.persist(d)
+//     println("${tmpdir.keeps(kept)}")
+// ```
+pub fn persist(d: TmpDir) -> TmpDir []
+    todo("tempdir-nv.tmpdir.persist")
+
+// Move the tree to a destination the caller names, and answer where it
+// landed.
+//
+// A rename when the destination is on the same filesystem, and
+// `TmpPersistFailed` when it is not — deliberately NOT a copy, because
+// a silent copy of a fixture that turned out to be four gigabytes is
+// worse than a refusal naming both paths.  The returned `TmpDir` is
+// `TmpKeepOnClose` and rooted at the destination's parent, so closing
+// it afterwards is a no-op rather than a removal of somebody's output
+// directory.
+//
+// ```novo
+// use tmproot
+// use tmpdir
+//
+// fn main() [io, fs]
+//     let d = TmpDir { root: tmproot.root_unchecked("/tmp"),
+//                      path: "/tmp/novo-a2f4k9",
+//                      disposition: TmpRemoveOnClose }
+//     match tmpdir.persist_to(d, "target/fixture-kept")
+//         Ok(k)  => println(tmpdir.dir_path(k))
+//         Err(e) => println(e.message())
+// ```
+pub fn persist_to(d: TmpDir, dest: Str) -> Result<TmpDir, tmproot.TmpError> [fs]
+    todo("tempdir-nv.tmpdir.persist_to")
+
+// Whether `close` will leave the tree where it is.
+//
+// ```novo
+// use tmproot
+// use tmpdir
+//
+// fn main() [io]
+//     let d = TmpDir { root: tmproot.root_unchecked("/tmp"),
+//                      path: "/tmp/novo-a2f4k9",
+//                      disposition: TmpKeepOnClose }
+//     println("${tmpdir.keeps(d)}")
+// ```
+pub fn keeps(d: TmpDir) -> Bool []
+    todo("tempdir-nv.tmpdir.keeps")
+
+// Remove the tree, or not, according to the disposition — and report.
+//
+// TOTAL: it raises nothing and it answers nothing a caller has to
+// match on before their own assertion runs.  A `TmpKeepOnClose`
+// directory answers an all-zero report, which is the same shape as "it
+// was already gone", and both are correct answers to "what did the
+// teardown remove".
+//
+// ```novo
+// use tmproot
+// use tmpdir
+// use tmpclean
+//
+// fn main() [io, fs]
+//     let d = TmpDir { root: tmproot.root_unchecked("/tmp"),
+//                      path: "/tmp/novo-a2f4k9",
+//                      disposition: TmpRemoveOnClose }
+//     println(tmpclean.report_line(tmpdir.close(d)))
+// ```
+pub fn close(d: TmpDir) -> tmpclean.TmpRemoveReport [fs]
+    todo("tempdir-nv.tmpdir.close")
+
+// `close`, reduced to a yes or a no.
+//
+// For a teardown that wants one boolean to assert on, and the line a
+// harness prints when it is false.
+//
+// ```novo
+// use tmproot
+// use tmpdir
+//
+// fn main() [io, fs]
+//     let d = TmpDir { root: tmproot.root_unchecked("/tmp"),
+//                      path: "/tmp/novo-a2f4k9",
+//                      disposition: TmpRemoveOnClose }
+//     println("${tmpdir.close_ok(d)}")
+// ```
+pub fn close_ok(d: TmpDir) -> Bool [fs]
+    todo("tempdir-nv.tmpdir.close_ok")
+
+// Whether anything is still on disk at the directory's path.
+//
+// The assertion a test of a teardown makes, and the one thing `close`'s
+// report cannot answer on its own: a report with no failures still says
+// nothing about a path something else recreated.
+//
+// ```novo
+// use tmproot
+// use tmpdir
+//
+// fn main() [io, fs]
+//     let d = TmpDir { root: tmproot.root_unchecked("/tmp"),
+//                      path: "/tmp/novo-a2f4k9",
+//                      disposition: TmpRemoveOnClose }
+//     println("${tmpdir.exists(d)}")
+// ```
+pub fn exists(d: TmpDir) -> Bool [fs]
+    todo("tempdir-nv.tmpdir.exists")
+
+// Create a temporary directory, run `body` with it, remove it, answer
+// what `body` answered.
+//
+// The shape that cannot be forgotten.  The tree is removed whether
+// `body` returned or panicked, and the removal happens before this
+// returns, so an assertion inside `body` that fails still leaves a
+// clean machine.
+//
+// `body` is a NAMED FUNCTION and not a lambda: a lambda body is one
+// expression, a fixture body is several statements, and at
+// `@tier(embedded)` a lambda that becomes a value is refused outright.
+// Every example in this package's documentation writes a named
+// function for that reason.
+//
+// The row is `[fs]`.  `with_temp_dir_io` is the same call for a body
+// that also prints; see the module comment for why the family is two
+// and not open-ended.
+//
+// ```novo
+// use tmpname
+// use tmpdir
+// use std.fs
+//
+// fn write_one(d: TmpDir) -> Bool [fs]
+//     match tmpdir.child(d, "note.txt")
+//         Err(_) => false
+//         Ok(p)  => fs.write(p, "hello")
+//
+// fn main() [io, fs, rand]
+//     match tmpdir.with_temp_dir(tmpname.prefixed("novo-"), write_one)
+//         Ok(v)  => println("${v}")
+//         Err(e) => println(e.message())
+// ```
+pub fn with_temp_dir<T>(n: tmpname.TmpNaming,
+                        body: fn(TmpDir) -> T [fs]) -> Result<T, tmproot.TmpError> [fs, io, rand]
+    todo("tempdir-nv.tmpdir.with_temp_dir")
+
+// `with_temp_dir` for a body that also prints, pipes or runs a
+// subprocess.
+//
+// ```novo
+// use tmpname
+// use tmpdir
+//
+// fn announce(d: TmpDir) -> Int [fs, io]
+//     println(tmpdir.dir_path(d))
+//     0
+//
+// fn main() [io, fs, rand]
+//     match tmpdir.with_temp_dir_io(tmpname.prefixed("novo-"), announce)
+//         Ok(v)  => println("${v}")
+//         Err(e) => println(e.message())
+// ```
+pub fn with_temp_dir_io<T>(n: tmpname.TmpNaming,
+                           body: fn(TmpDir) -> T [fs, io]) -> Result<T, tmproot.TmpError> [fs, io, rand]
+    todo("tempdir-nv.tmpdir.with_temp_dir_io")
+
+// `with_temp_dir` under a root the caller already has.
+//
+// No `[io]`, for the same reason `create_dir_in` has none.
+//
+// ```novo
+// use tmproot
+// use tmpname
+// use tmpdir
+//
+// fn count(d: TmpDir) -> Int [fs]
+//     let _ = d
+//     1
+//
+// fn main() [io, fs, rand]
+//     let r = tmproot.root_unchecked("/tmp")
+//     match tmpdir.with_temp_dir_in(r, tmpname.naming(), count)
+//         Ok(v)  => println("${v}")
+//         Err(e) => println(e.message())
+// ```
+pub fn with_temp_dir_in<T>(r: tmproot.TmpRoot, n: tmpname.TmpNaming,
+                           body: fn(TmpDir) -> T [fs]) -> Result<T, tmproot.TmpError> [fs, rand]
+    todo("tempdir-nv.tmpdir.with_temp_dir_in")
+
+// Run `body` with a temporary directory, and KEEP the tree when it
+// answers false.
+//
+// The fixture shape a failing test wants: clean up after a pass, leave
+// the evidence after a failure, and print where it was left.  Written
+// once here because every harness that needs it writes it slightly
+// wrong — usually by removing the tree in a teardown that runs before
+// the verdict is known.
+//
+// ```novo
+// use tmpname
+// use tmpdir
+//
+// fn check(d: TmpDir) -> Bool [fs]
+//     let _ = d
+//     false
+//
+// fn main() [io, fs, rand]
+//     match tmpdir.with_temp_dir_kept_on_failure(tmpname.prefixed("novo-"), check)
+//         Ok(kept) => println(kept)
+//         Err(e)   => println(e.message())
+// ```
+pub fn with_temp_dir_kept_on_failure(n: tmpname.TmpNaming,
+                                     body: fn(TmpDir) -> Bool [fs]) -> Result<Str, tmproot.TmpError> [fs, io, rand]
+    todo("tempdir-nv.tmpdir.with_temp_dir_kept_on_failure")

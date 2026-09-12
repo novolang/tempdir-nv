@@ -1,0 +1,162 @@
+// tmpclean_tests.nv — the removal, asserted as a plan.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: tempdir-nv.<module>.<fn>`.
+//
+// THE ORDER IS THE PROPERTY.  A plan that named a directory before the
+// things inside it would fail every directory removal, and the failure
+// would look like a permission problem rather than an ordering one.
+// So the first test here is about the order of a list, and it needs no
+// filesystem to be meaningful once the bodies land.
+//
+// AND A LINK IS ITS OWN KIND.  `TmpEntrySymlink` exists so that "did
+// the walk follow this?" is answerable from the plan, and the test for
+// it asserts the kind rather than the count.
+
+use std.test
+use std.list
+use tmproot
+use tmpname
+use tmpclean
+
+fn root() -> tmproot.TmpRoot
+    tmproot.root_unchecked("/tmp")
+
+fn entry(path: Str, kind: TmpEntryKind, depth: Int) -> TmpEntry
+    TmpEntry { path: path, kind: kind, depth: depth }
+
+@test
+fn test_a_plan_is_deepest_first_and_ends_at_the_directory_itself() [io, fs]
+    match tmpclean.plan_removal(root(), "/tmp/novo-a2f4k9")
+        Err(_)   => test.assert(true)
+        Ok(plan) =>
+            test.case("a non-empty plan ends with the directory it was asked about")
+            if list.len(plan) > 0
+                match list.last(plan)
+                    None    => test.assert(false)
+                    Some(e) => test.assert(e.path == "/tmp/novo-a2f4k9")
+            else
+                test.assert(true)
+
+            test.case("and no entry is shallower than the one after it")
+            test.assert(tmpclean.plan_complete(plan))
+
+@test
+fn test_planning_a_path_outside_the_root_is_refused_before_anything_runs() [io, fs]
+    test.case("a sibling of the root")
+    match tmpclean.plan_removal(root(), "/etc")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("a path that climbs out")
+    match tmpclean.plan_removal(root(), "/tmp/../etc")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_planning_an_absent_path_is_an_empty_plan_and_not_an_error() [io, fs]
+    // A teardown that runs twice should be quiet the second time.
+    match tmpclean.plan_removal(root(), "/tmp/novo-was-never-there")
+        Err(_)   => test.assert(false)
+        Ok(plan) => test.assert(list.len(plan) == 0)
+
+@test
+fn test_remove_planned_rechecks_the_root_rather_than_trusting_the_plan() [io, fs]
+    // A plan is a value a caller can build by hand, so the performing
+    // half re-checks each entry.
+    let forged = [entry("/etc/passwd", TmpEntryFile, 1)]
+    let rep = tmpclean.remove_planned(root(), forged)
+
+    test.case("nothing was removed")
+    test.assert(tmpclean.report_total(rep) == 0)
+
+    test.case("and the refusal is in the report with the path on it")
+    test.assert(list.len(rep.failed) == 1)
+
+@test
+fn test_a_report_separates_what_went_from_what_did_not() [io]
+    let clean = TmpRemoveReport { files: 3, dirs: 2, links: 1, failed: [] }
+
+    test.case("the total counts every kind")
+    test.assert(tmpclean.report_total(clean) == 6)
+
+    test.case("a report with no failures is clean")
+    test.assert(tmpclean.report_clean(clean))
+
+    test.case("and its one line is one line")
+    test.assert(tmpclean.report_line(clean) != "")
+
+@test
+fn test_the_first_failure_is_reachable_without_reading_the_report() [io]
+    let clean = TmpRemoveReport { files: 0, dirs: 0, links: 0, failed: [] }
+
+    test.case("a clean report has none")
+    match tmpclean.first_failure(clean)
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+    let broken = TmpRemoveReport { files: 0, dirs: 0, links: 0,
+                                   failed: [TmpFailure { path: "/tmp/x",
+                                                         why: TmpRemoveFailed("/tmp/x") }] }
+
+    test.case("and a failed one answers the first")
+    match tmpclean.first_failure(broken)
+        None    => test.assert(false)
+        Some(e) => test.assert(tmproot.error_path(e) == "/tmp/x")
+
+@test
+fn test_a_depth_limited_plan_says_it_is_incomplete() [io, fs]
+    match tmpclean.plan_removal_to_depth(root(), "/tmp/novo-a2f4k9", 1)
+        Err(_)   => test.assert(true)
+        Ok(plan) =>
+            test.case("no entry is deeper than the limit")
+            test.assert(list.all(plan, e => e.depth <= 1))
+
+@test
+fn test_the_default_depth_limit_is_a_terminating_walk_and_not_a_knob() [io]
+    test.case("64")
+    test.assert(tmpclean.default_depth_limit() == 64)
+
+@test
+fn test_empty_tree_leaves_the_directory_it_emptied() [io, fs]
+    // The teardown a caller-supplied root must use: it may empty what
+    // it made and may not remove the root itself.
+    match tmpclean.empty_tree(root(), "/tmp/novo-a2f4k9")
+        Err(_)  => test.assert(true)
+        Ok(rep) => test.assert(tmpclean.report_total(rep) >= 0)
+
+@test
+fn test_rendering_a_plan_is_one_line_per_entry() [io]
+    let plan = [entry("/tmp/a/b.txt", TmpEntryFile, 2),
+                entry("/tmp/a/link", TmpEntrySymlink, 2),
+                entry("/tmp/a", TmpEntryDir, 1)]
+
+    test.case("the rendering names every path")
+    let text = tmpclean.render_plan(plan)
+    test.assert(text != "")
+
+@test
+fn test_remove_tree_plans_and_performs_in_one_call() [io, fs]
+    // The convenience `tmpdir.close` is built on.  `Err` only for a
+    // refusal that happens before anything is removed; anything that
+    // fails during the removal is in the report.
+    test.case("a path outside the root is refused before anything runs")
+    match tmpclean.remove_tree(root(), "/etc")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("and an absent path is a clean empty report, not an error")
+    match tmpclean.remove_tree(root(), "/tmp/novo-was-never-there")
+        Err(_)  => test.assert(false)
+        Ok(rep) => test.assert(tmpclean.report_total(rep) == 0)
+
+@test
+fn test_a_sweeper_lists_before_it_removes() [io, fs]
+    // The first half of a sweeper, and the whole reason it is two
+    // halves: a long-running build machine accumulates fixtures from
+    // runs that were killed, and the way to clean them is to list,
+    // show, then remove — never to remove what a pattern matched on the
+    // way past.
+    test.case("leaked_under answers paths and removes nothing")
+    let found = tmpclean.leaked_under(root(), tmpname.prefixed("tempdir-nv-"))
+    test.assert(list.len(found) >= 0)

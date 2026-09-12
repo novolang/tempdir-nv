@@ -1,0 +1,45 @@
+[package]
+name        = "tempdir-nv"
+version     = "0.0.1"
+description = "Temporary files and directories that clean themselves up, in a language with no destructors: a TmpRoot is a directory this package created and may therefore delete, a TmpDir carries its own disposition so `persist` is a value change rather than a cancelled destructor, `close` is total and answers a report, and `with_temp_dir` is the shape that cannot be forgotten.  Removal is planned before it is performed, and a plan that leaves the root is refused.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `host`, and the rows are narrow on purpose.
+#
+# `[fs]` is the whole package: creating a directory, listing it,
+# deleting it, renaming it out.  `[io]` appears on exactly the four
+# functions that read the ENVIRONMENT for the platform temp root —
+# `env.get("TMPDIR")` is `[io]` and not `[fs]`, because the label
+# covers the environment as well as pipes and processes (SPEC § 5.1).
+# `[rand]` appears on exactly the functions that draw a name token.
+#
+# The consequence a caller can use: `tmpclean.remove_tree`,
+# `tmpdir.close` and `tmpfile.close` are `[fs]` alone, so tearing a
+# fixture down needs neither entropy nor the environment, and the
+# planning and path arithmetic are `[]` and testable with no disk.
+layer       = "host"
+
+category    = "testing"
+
+tags        = ["tempfile", "tempdir", "temporary", "fixture", "testing", "cleanup", "scratch"]
+repository  = "https://github.com/novolang/tempdir-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.8.9"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "A directory this package created, and what that licenses it to delete"
+
+[dependencies]
+# None.  Everything here is `std.fs`, `std.env` and `std.rand` plus
+# path arithmetic over `Str`, and a package whose whole purpose is to
+# be safe to depend on in a test should not drag a closure in with it.

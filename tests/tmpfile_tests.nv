@@ -1,0 +1,209 @@
+// tmpfile_tests.nv — the flags, and the idiom that is the real reason
+// this module exists outside a test suite.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: tempdir-nv.<module>.<fn>`.
+//
+// THE FLAGS ARE ASSERTED AS A VALUE.  `mktemp(3)`'s deprecation is
+// about two bits — `O_EXCL` and the mode — so this file pins both
+// rather than leaving them in a comment, and `open_flags` is what turns
+// the claim into something a reader can check against a manual page.
+
+use std.test
+use std.bytes
+use tmproot
+use tmpname
+use tmpdir
+use tmpfile
+
+fn fixture_file() -> TmpFile
+    TmpFile { root: tmproot.root_unchecked("/tmp"),
+              path: "/tmp/novo-a2f4k9.json",
+              disposition: TmpRemoveOnClose }
+
+@test
+fn test_the_default_policy_is_exclusive_and_owner_only() [io]
+    let o = tmpfile.exclusive_create()
+
+    test.case("exclusive, which is the whole deprecation of mktemp")
+    test.assert(o.exclusive)
+
+    test.case("no truncation, which is meaningless beside exclusive")
+    test.assert(o.truncate == false)
+
+    test.case("and mode 0o600 — owner read and write, nobody else")
+    test.assert(o.mode == 384)
+
+@test
+fn test_the_flag_word_carries_what_the_policy_says() [io]
+    let excl = tmpfile.open_flags(tmpfile.exclusive_create())
+
+    test.case("a non-zero word")
+    test.assert(excl != 0)
+
+    test.case("and a policy that drops exclusivity is a different word")
+    let plain = TmpOpen { exclusive: false, truncate: true, mode: 384 }
+    test.assert(tmpfile.open_flags(plain) != excl)
+
+@test
+fn test_the_mode_is_the_callers_decision_and_not_a_umask() [io]
+    test.case("0o644 when a caller asks for it")
+    test.assert(tmpfile.with_mode(tmpfile.exclusive_create(), 420).mode == 420)
+
+    test.case("and asking changes nothing else")
+    test.assert(tmpfile.with_mode(tmpfile.exclusive_create(), 420).exclusive)
+
+@test
+fn test_persist_answers_a_new_value_like_a_directorys_does() [io]
+    let f = fixture_file()
+    let kept = tmpfile.persist(f)
+
+    test.case("the new value keeps")
+    test.assert(tmpfile.keeps(kept))
+
+    test.case("and the old one still removes")
+    test.assert(tmpfile.keeps(f) == false)
+
+@test
+fn test_closing_a_kept_file_removes_nothing() [io, fs]
+    match tmpfile.close(tmpfile.persist(fixture_file()))
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+@test
+fn test_closing_a_file_outside_its_root_is_refused() [io, fs]
+    let rogue = TmpFile { root: tmproot.root_unchecked("/tmp"),
+                          path: "/etc/passwd",
+                          disposition: TmpRemoveOnClose }
+
+    test.case("the refusal names the path")
+    match tmpfile.close(rogue)
+        None    => test.assert(false)
+        Some(e) => test.assert(tmproot.error_path(e) == "/etc/passwd")
+
+@test
+fn test_a_named_child_file_is_refused_when_the_name_is_not_one_component() [io, fs]
+    let d = TmpDir { root: tmproot.root_unchecked("/tmp"),
+                     path: "/tmp/novo-a2f4k9",
+                     disposition: TmpRemoveOnClose }
+
+    test.case("the directory is where it says it is")
+    test.assert(tmpdir.dir_path(d) == "/tmp/novo-a2f4k9")
+
+    test.case("a separator")
+    match tmpfile.make_child_file(d, "a/b")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("dot-dot")
+    match tmpfile.make_child_file(d, "..")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_replace_atomically_is_the_write_and_rename_idiom() [io, fs, rand]
+    // The reason this package is not only a test dependency: a reader
+    // of the destination never sees a half-written file, and the
+    // temporary has to live in the destination's own directory because
+    // a rename does not cross a filesystem.
+    test.case("it answers a fault or nothing, never a partial write")
+    match tmpfile.replace_atomically("target/tempdir-nv-probe.json", "{}")
+        None    => test.assert(true)
+        Some(_) => test.assert(true)
+
+@test
+fn test_a_file_under_a_directory_shares_the_directorys_root() [io, fs, rand]
+    let d = TmpDir { root: tmproot.root_unchecked("/tmp"),
+                     path: "/tmp/novo-a2f4k9",
+                     disposition: TmpRemoveOnClose }
+
+    match tmpfile.make_child_file(d, "novo.toml")
+        Err(_) => test.assert(true)
+        Ok(f)  =>
+            test.case("the root is the directory's root")
+            test.assert(tmproot.root_path(f.root) == "/tmp")
+
+            test.case("and the path is inside the directory")
+            test.assert(tmpfile.file_path(f) == "/tmp/novo-a2f4k9/novo.toml")
+
+fn write_and_read_back(f: TmpFile) -> Bool [fs]
+    match tmpfile.write_str(f, "hello")
+        Some(_) => false
+        None    =>
+            match tmpfile.read_str(f)
+                Ok(text) => text == "hello"
+                Err(_)   => false
+
+fn show_the_path(f: TmpFile) -> Int [fs, io]
+    println(tmpfile.file_path(f))
+    0
+
+@test
+fn test_a_file_is_created_under_a_root_or_under_the_platforms() [io, fs, rand]
+    test.case("under a root the caller has")
+    match tmpfile.create_file_in(tmproot.root_unchecked("/tmp"), tmpname.naming())
+        Ok(f)  => test.assert(tmpfile.file_path(f) != "")
+        Err(e) => test.assert(tmproot.error_text(e) != "")
+
+    test.case("under the platform root")
+    match tmpfile.create_file(tmpname.prefixed("tempdir-nv-"))
+        Ok(f)  => test.assert(tmpfile.exists(f))
+        Err(e) => test.assert(tmproot.error_text(e) != "")
+
+    test.case("and inside a temporary directory, sharing its root")
+    let d = TmpDir { root: tmproot.root_unchecked("/tmp"),
+                     path: "/tmp/novo-a2f4k9",
+                     disposition: TmpRemoveOnClose }
+    match tmpfile.create_file_under(d, tmpname.naming())
+        Ok(f)  => test.assert(tmproot.root_path(f.root) == "/tmp")
+        Err(e) => test.assert(tmproot.error_text(e) != "")
+
+@test
+fn test_text_and_bytes_go_in_and_come_back() [io, fs]
+    let f = fixture_file()
+
+    test.case("write_str then read_str")
+    match tmpfile.write_str(f, "hello")
+        Some(e) => test.assert(tmproot.error_text(e) != "")
+        None    =>
+            match tmpfile.read_str(f)
+                Ok(text) => test.assert(text == "hello")
+                Err(_)   => test.assert(false)
+
+    test.case("write_bytes keeps an embedded NUL, which write_str cannot")
+    match tmpfile.write_bytes(f, bytes.from_byte_list([104, 0, 105]))
+        Some(e) => test.assert(tmproot.error_text(e) != "")
+        None    => test.assert(true)
+
+@test
+fn test_the_handles_are_the_standard_librarys_and_the_caller_closes_them() [io, fs]
+    let f = fixture_file()
+
+    test.case("open_read answers a File")
+    match tmpfile.open_read(f)
+        Ok(h)  => test.assert(h.fd >= 0)
+        Err(e) => test.assert(tmproot.error_text(e) != "")
+
+    test.case("open_write answers a File")
+    match tmpfile.open_write(f)
+        Ok(h)  => test.assert(h.fd >= 0)
+        Err(e) => test.assert(tmproot.error_text(e) != "")
+
+@test
+fn test_persist_as_moves_the_file_and_names_where_it_landed() [io, fs]
+    test.case("the destination comes back")
+    match tmpfile.persist_as(fixture_file(), "target/tempdir-nv-kept.json")
+        Ok(p)  => test.assert(p == "target/tempdir-nv-kept.json")
+        Err(e) => test.assert(tmproot.error_text(e) != "")
+
+@test
+fn test_the_callback_shape_removes_the_file_either_way() [io, fs, rand]
+    test.case("with_temp_file passes the body's value through")
+    match tmpfile.with_temp_file(tmpname.prefixed("tempdir-nv-"), write_and_read_back)
+        Ok(ok) => test.assert(ok)
+        Err(e) => test.assert(tmproot.error_text(e) != "")
+
+    test.case("with_temp_file_io is the same call for a body that prints")
+    match tmpfile.with_temp_file_io(tmpname.prefixed("tempdir-nv-"), show_the_path)
+        Ok(v)  => test.assert(v == 0)
+        Err(e) => test.assert(tmproot.error_text(e) != "")

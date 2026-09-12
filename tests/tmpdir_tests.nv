@@ -1,0 +1,217 @@
+// tmpdir_tests.nv — the disposition, and the two ways a caller gets
+// cleanup wrong in a language with no destructors.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: tempdir-nv.<module>.<fn>`.
+//
+// THE ASSERTIONS THAT MATTER ARE ABOUT THE VALUE, not the filesystem.
+// `persist` answers a new `TmpDir` and does not change the old one;
+// `close` on a kept directory reports zero rather than removing; and a
+// `TmpDir` whose path was rewritten out of its root is refused. All
+// three are facts about values, so they are asserted here without a
+// disk — which is also the argument for putting the disposition in the
+// value in the first place.
+
+use std.test
+use std.list
+use tmproot
+use tmpname
+use tmpdir
+use tmpclean
+
+fn fixture() -> TmpDir
+    TmpDir { root: tmproot.root_unchecked("/tmp"),
+             path: "/tmp/novo-a2f4k9",
+             disposition: TmpRemoveOnClose }
+
+@test
+fn test_persist_answers_a_new_value_and_leaves_the_old_one_alone() [io]
+    let d = fixture()
+    let kept = tmpdir.persist(d)
+
+    test.case("the new value keeps")
+    test.assert(tmpdir.keeps(kept))
+
+    test.case("the old value still removes")
+    test.assert(tmpdir.keeps(d) == false)
+
+    test.case("and both name the same directory")
+    test.assert(tmpdir.dir_path(kept) == tmpdir.dir_path(d))
+
+@test
+fn test_closing_a_kept_directory_removes_nothing() [io, fs]
+    let kept = tmpdir.persist(fixture())
+    let rep = tmpdir.close(kept)
+
+    test.case("nothing was removed")
+    test.assert(tmpclean.report_total(rep) == 0)
+
+    test.case("and the report is clean, which is not the same claim")
+    test.assert(tmpclean.report_clean(rep))
+
+@test
+fn test_child_refuses_a_name_that_would_leave_the_directory() [io]
+    let d = fixture()
+
+    test.case("dot-dot")
+    match tmpdir.child(d, "..")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("a separator")
+    match tmpdir.child(d, "a/b")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("and an ordinary name lands inside")
+    match tmpdir.child(d, "note.txt")
+        Ok(p)  => test.assert(p == "/tmp/novo-a2f4k9/note.txt")
+        Err(_) => test.assert(false)
+
+@test
+fn test_child_at_checks_every_component_of_a_relative_path() [io]
+    let d = fixture()
+
+    test.case("a plain relative path")
+    match tmpdir.child_at(d, "src/main.nv")
+        Ok(p)  => test.assert(p == "/tmp/novo-a2f4k9/src/main.nv")
+        Err(_) => test.assert(false)
+
+    test.case("a dot-dot anywhere in it")
+    match tmpdir.child_at(d, "src/../../etc")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("and an absolute path is not a relative one")
+    match tmpdir.child_at(d, "/etc/passwd")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_closing_a_directory_outside_its_root_removes_nothing() [io, fs]
+    // The value a caller can build by hand, or rewrite the path of.
+    // `close` is the last place this can be caught and it catches it.
+    let rogue = TmpDir { root: tmproot.root_unchecked("/tmp"),
+                         path: "/etc",
+                         disposition: TmpRemoveOnClose }
+    let rep = tmpdir.close(rogue)
+
+    test.case("nothing was removed")
+    test.assert(tmpclean.report_total(rep) == 0)
+
+    test.case("and the refusal is reported rather than swallowed")
+    test.assert(tmpclean.report_clean(rep) == false)
+    test.assert(list.len(rep.failed) == 1)
+
+@test
+fn test_closing_twice_is_not_a_failure_the_caller_has_to_prevent() [io, fs]
+    let d = fixture()
+
+    test.case("the first close")
+    let _ = tmpdir.close(d)
+
+    test.case("the second close reports nothing removed and does not raise")
+    let again = tmpdir.close(d)
+    test.assert(tmpclean.report_total(again) == 0)
+
+@test
+fn test_persist_to_lands_a_kept_directory_at_the_destination() [io, fs]
+    match tmpdir.persist_to(fixture(), "target/fixture-kept")
+        Err(_) => test.assert(true)
+        Ok(k)  =>
+            test.case("the destination is where it says")
+            test.assert(tmpdir.dir_path(k) == "target/fixture-kept")
+
+            test.case("and closing it afterwards removes nothing")
+            test.assert(tmpdir.keeps(k))
+
+@test
+fn test_a_sub_directory_shares_the_parents_root() [io, fs, rand]
+    // Which is what makes closing the parent remove the child, and
+    // closing the child leave the parent alone.
+    match tmpdir.create_sub_dir(fixture(), tmpname.prefixed("inner-"))
+        Err(_) => test.assert(true)
+        Ok(c)  =>
+            test.case("the child is under the parent")
+            test.assert(tmproot.contains(c.root, tmpdir.dir_path(c)))
+
+            test.case("and the root is the parent's, not the parent")
+            test.assert(tmproot.root_path(c.root) == "/tmp")
+
+// A body for the callback shapes.  A NAMED function, because a lambda
+// body is one expression and at `@tier(embedded)` a lambda that becomes
+// a value is refused outright.
+fn body_answers_the_path(d: TmpDir) -> Str [fs]
+    tmpdir.dir_path(d)
+
+fn body_prints_the_path(d: TmpDir) -> Int [fs, io]
+    println(tmpdir.dir_path(d))
+    0
+
+fn body_fails(d: TmpDir) -> Bool [fs]
+    let _ = d
+    false
+
+@test
+fn test_a_directory_is_created_under_a_root_or_under_the_platforms() [io, fs, rand]
+    test.case("under a root the caller has, with no environment read")
+    match tmpdir.create_dir_in(tmproot.root_unchecked("/tmp"), tmpname.naming())
+        Ok(d)  => test.assert(tmproot.contains(d.root, tmpdir.dir_path(d)))
+        Err(e) => test.assert(tmproot.error_text(e) != "")
+
+    test.case("under the platform root, which is where the environment is read")
+    match tmpdir.create_dir(tmpname.prefixed("tempdir-nv-"))
+        Ok(d)  => test.assert(tmpdir.exists(d))
+        Err(e) => test.assert(tmproot.error_text(e) != "")
+
+@test
+fn test_a_named_child_directory_refuses_what_child_refuses() [io, fs]
+    let d = fixture()
+
+    test.case("make_child_dir will not take a separator")
+    match tmpdir.make_child_dir(d, "a/b")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("make_child_path takes one, component by component")
+    match tmpdir.make_child_path(d, "src/lib")
+        Ok(p)  => test.assert(p == "/tmp/novo-a2f4k9/src/lib")
+        Err(e) => test.assert(tmproot.error_text(e) != "")
+
+    test.case("and refuses a dot-dot inside it")
+    match tmpdir.make_child_path(d, "src/../../etc")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_close_ok_is_the_one_line_version_of_the_report() [io, fs]
+    test.case("a kept directory closes clean without removing")
+    test.assert(tmpdir.close_ok(tmpdir.persist(fixture())))
+
+@test
+fn test_the_callback_shape_answers_what_the_body_answered() [io, fs, rand]
+    test.case("with_temp_dir passes the body's value through")
+    match tmpdir.with_temp_dir(tmpname.prefixed("tempdir-nv-"), body_answers_the_path)
+        Ok(p)  => test.assert(p != "")
+        Err(e) => test.assert(tmproot.error_text(e) != "")
+
+    test.case("with_temp_dir_io is the same call for a body that prints")
+    match tmpdir.with_temp_dir_io(tmpname.prefixed("tempdir-nv-"), body_prints_the_path)
+        Ok(v)  => test.assert(v == 0)
+        Err(e) => test.assert(tmproot.error_text(e) != "")
+
+    test.case("with_temp_dir_in reads no environment")
+    match tmpdir.with_temp_dir_in(tmproot.root_unchecked("/tmp"), tmpname.naming(),
+                                  body_answers_the_path)
+        Ok(p)  => test.assert(p != "")
+        Err(e) => test.assert(tmproot.error_text(e) != "")
+
+@test
+fn test_a_failing_body_leaves_the_evidence_on_disk() [io, fs, rand]
+    // Clean up after a pass, keep after a failure — the fixture shape
+    // every harness writes slightly wrong, usually by removing the tree
+    // in a teardown that runs before the verdict is known.
+    test.case("the path it kept comes back, so a person can be told where")
+    match tmpdir.with_temp_dir_kept_on_failure(tmpname.prefixed("tempdir-nv-"), body_fails)
+        Ok(kept) => test.assert(kept != "")
+        Err(e)   => test.assert(tmproot.error_text(e) != "")

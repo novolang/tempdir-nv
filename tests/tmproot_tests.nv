@@ -1,0 +1,184 @@
+// tmproot_tests.nv — what a root is allowed to contain, and the paths
+// that must not be under one.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: tempdir-nv.<module>.<fn>`.
+// That is the expected result until the bodies land.
+//
+// THE CASES THAT MATTER ARE THE REFUSALS.  A `contains` that answers
+// true too often is a recursive delete pointed somewhere it was not
+// meant to go, so the table below is mostly paths that look like they
+// are under the root and are not: a sibling with a common prefix, a
+// relative path, a `..` that climbs out, and the root's own parent.
+
+use std.test
+use std.str
+use tmproot
+
+@test
+fn test_a_path_under_the_root_is_contained() [io]
+    let r = tmproot.root_unchecked("/tmp")
+
+    test.case("the root itself")
+    test.assert(tmproot.contains(r, "/tmp"))
+
+    test.case("a child")
+    test.assert(tmproot.contains(r, "/tmp/novo-a2f4k9"))
+
+    test.case("a grandchild")
+    test.assert(tmproot.contains(r, "/tmp/novo-a2f4k9/src/main.nv"))
+
+    test.case("a trailing separator changes nothing")
+    test.assert(tmproot.contains(r, "/tmp/novo-a2f4k9/"))
+
+@test
+fn test_a_sibling_sharing_a_prefix_is_not_contained() [io]
+    // The classic defect: a prefix compare rather than a segment
+    // compare, and `/tmpfoo` is suddenly inside `/tmp`.
+    let r = tmproot.root_unchecked("/tmp")
+
+    test.case("a sibling directory whose name starts with the root's")
+    test.assert(tmproot.contains(r, "/tmpfoo/data") == false)
+
+    test.case("a sibling file whose name starts with the root's")
+    test.assert(tmproot.contains(r, "/tmp-backup") == false)
+
+@test
+fn test_a_path_that_climbs_out_is_not_contained() [io]
+    let r = tmproot.root_unchecked("/tmp/fixtures")
+
+    test.case("one level out")
+    test.assert(tmproot.contains(r, "/tmp/fixtures/../other") == false)
+
+    test.case("out and back in again IS contained, after normalisation")
+    test.assert(tmproot.contains(r, "/tmp/fixtures/a/../b"))
+
+    test.case("all the way to the root of the filesystem")
+    test.assert(tmproot.contains(r, "/tmp/fixtures/../../etc/passwd") == false)
+
+@test
+fn test_a_relative_path_is_never_contained() [io]
+    // There is nothing to compare a relative path against, and
+    // answering true would be exactly the defect this function exists
+    // to prevent.
+    let r = tmproot.root_unchecked("/tmp")
+
+    test.case("a bare name")
+    test.assert(tmproot.contains(r, "fixture") == false)
+
+    test.case("a name that would be under the root if joined")
+    test.assert(tmproot.contains(r, "tmp/fixture") == false)
+
+@test
+fn test_normalise_collapses_what_contains_compares() [io]
+    test.case("repeated separators")
+    test.assert(tmproot.normalise("/tmp//a///b") == "/tmp/a/b")
+
+    test.case("a dot segment")
+    test.assert(tmproot.normalise("/tmp/./a") == "/tmp/a")
+
+    test.case("a dot-dot segment against what precedes it")
+    test.assert(tmproot.normalise("/tmp/a/../b") == "/tmp/b")
+
+    test.case("a trailing separator")
+    test.assert(tmproot.normalise("/tmp/a/") == "/tmp/a")
+
+    test.case("the filesystem root survives")
+    test.assert(tmproot.normalise("/") == "/")
+
+@test
+fn test_join_produces_exactly_one_separator() [io]
+    test.case("a root with no trailing separator")
+    test.assert(tmproot.join(tmproot.root_unchecked("/tmp"), "x") == "/tmp/x")
+
+    test.case("a root written with one")
+    test.assert(tmproot.join(tmproot.root_unchecked("/tmp/"), "x") == "/tmp/x")
+
+@test
+fn test_child_path_refuses_every_name_that_is_not_one_component() [io]
+    test.case("a name with a separator")
+    match tmproot.child_path("/tmp/fixture", "a/b")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("dot-dot")
+    match tmproot.child_path("/tmp/fixture", "..")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("dot")
+    match tmproot.child_path("/tmp/fixture", ".")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("the empty name")
+    match tmproot.child_path("/tmp/fixture", "")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("and an ordinary name is accepted")
+    match tmproot.child_path("/tmp/fixture", "note.txt")
+        Ok(p)  => test.assert(p == "/tmp/fixture/note.txt")
+        Err(_) => test.assert(false)
+
+@test
+fn test_the_path_components_round_trip() [io]
+    test.case("base_name is the last component")
+    test.assert(tmproot.base_name("/tmp/fixture/data.json") == "data.json")
+
+    test.case("parent_name is everything before it, with no separator")
+    test.assert(tmproot.parent_name("/tmp/fixture/data.json") == "/tmp/fixture")
+
+    test.case("and an absolute path is recognised as one")
+    test.assert(tmproot.is_absolute("/tmp"))
+    test.assert(tmproot.is_absolute("tmp") == false)
+
+@test
+fn test_every_error_names_a_path_and_takes_a_side() [io]
+    test.case("a create failure names what it could not create")
+    test.assert(tmproot.error_path(TmpCreateFailed("/tmp/x")) == "/tmp/x")
+
+    test.case("an outside-root refusal names the path, not the root")
+    test.assert(tmproot.error_path(TmpOutsideRoot("/tmp", "/etc")) == "/etc")
+
+    test.case("a bad name is the caller's fault")
+    test.assert(tmproot.is_caller_fault(TmpBadName("..")))
+
+    test.case("an unset root is the machine's")
+    test.assert(tmproot.is_caller_fault(TmpRootUnset) == false)
+
+    test.case("and the message carries the path")
+    test.assert(str.contains(tmproot.error_text(TmpCreateFailed("/tmp/x")), "/tmp/x"))
+
+@test
+fn test_the_platform_root_is_found_or_reported_as_absent() [io, fs]
+    // The one environment read in the package, and the one place a
+    // container built from scratch shows up as a named refusal rather
+    // than a create that fails four calls later.
+    test.case("system_root answers a root or says why not")
+    match tmproot.system_root()
+        Ok(r)  => test.assert(tmproot.is_absolute(tmproot.root_path(r)))
+        Err(e) => test.assert(tmproot.error_text(e) != "")
+
+    test.case("system_root_or always answers one")
+    test.assert(tmproot.root_path(tmproot.system_root_or("/var/tmp")) != "")
+
+@test
+fn test_a_named_root_is_checked_rather_than_assumed() [io, fs]
+    // Which is what makes the value a capability and not a string with
+    // a type on it: the refusal lands where the caller named the
+    // directory, not at the first create.
+    test.case("a path that is not a directory is refused")
+    match tmproot.root_at("/etc/hostname")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("a path that does not exist is refused")
+    match tmproot.root_at("/tmp/tempdir-nv-no-such-root")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("and root_make creates what root_at refused")
+    match tmproot.root_make("target/tempdir-nv-scratch")
+        Ok(r)  => test.assert(tmproot.root_path(r) != "")
+        Err(e) => test.assert(tmproot.error_text(e) != "")

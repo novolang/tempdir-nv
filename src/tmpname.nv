@@ -1,0 +1,245 @@
+// tmpname.nv — how a unique name is chosen, and the part of that which
+// is arithmetic.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE NAME AND THE CREATION ARE ONE OPERATION OR THEY ARE A RACE.  The
+// classic temporary-file defect is two steps — pick a name nobody is
+// using, then create it — with another process between them.  Every
+// platform's answer is the same: ask the kernel to create the name
+// exclusively, and treat "it already exists" as "draw again".  So the
+// contract this module publishes is a CANDIDATE and an ATTEMPT COUNT,
+// not a "find me a free name" function: `candidate` answers the name
+// for one token, the caller in `tmpdir`/`tmpfile` tries to create it
+// exclusively, and `TmpNameExhausted` is what a run of collisions
+// becomes after `attempts` tries.
+//
+// There is deliberately no `unique_name(root) -> Str` here.  A function
+// with that signature cannot be used correctly: whatever it answers was
+// true when it answered and is a race by the time the caller creates
+// it, and publishing it would make the wrong thing the easy thing.
+//
+// THE TOKEN IS SPLIT FROM THE DRAW so that the encoding is testable.
+// `encode_token` is `[]` — an integer and a length in, a string of the
+// alphabet out — and `draw_token` is the one `[rand]` function.  A test
+// that pins the naming scheme (`fixture-` + six characters + `.json`)
+// needs no entropy, and a test that wants a collision hands the same
+// integer twice.
+//
+// WHAT THE ALPHABET LEAVES OUT.  Lower-case letters and digits, minus
+// the four characters that make a name unreadable at a glance — `0`,
+// `1`, `l` and `o` — because temp paths are read aloud in bug reports
+// and pasted into shells.  No upper case: a name that round-trips
+// through a case-insensitive filesystem unchanged cannot collide with
+// itself, and macOS and Windows are both case-insensitive by default.
+// Nothing outside `[a-z2-9]`, so a name never needs quoting.
+
+// How a temporary name is built, as a value.
+//
+// A policy rather than four parameters on every call, because every
+// caller in a project wants the same one and the interesting thing is
+// the two or three that do not.
+pub struct TmpNaming
+    // What the name starts with.  Empty is allowed.  A prefix is the
+    // difference between a leaked directory somebody can attribute and
+    // one they cannot, so the convention this package's own
+    // documentation asks for is the program's name.
+    prefix: Str
+    // What the name ends with — `.json`, `.sock`.  Empty is allowed,
+    // and is the default: a temp DIRECTORY with an extension is odd.
+    suffix: Str
+    // How many characters of token sit between the two.  Six is the
+    // default, which is 36 bits over this alphabet.
+    token_len: Int
+    // How many exclusive creations may fail with "it exists" before
+    // the operation gives up with `TmpNameExhausted`.
+    attempts: Int
+
+// The default policy: no prefix, no suffix, six token characters, ten
+// attempts.
+//
+// ```novo
+// use tmpname
+//
+// fn main() [io]
+//     println("${tmpname.naming().token_len}")
+// ```
+pub fn naming() -> TmpNaming []
+    todo("tempdir-nv.tmpname.naming")
+
+// The default policy with a prefix, which is the call almost every
+// program makes.
+//
+// ```novo
+// use tmpname
+//
+// fn main() [io]
+//     println(tmpname.prefixed("novo-build").prefix)
+// ```
+pub fn prefixed(prefix: Str) -> TmpNaming []
+    todo("tempdir-nv.tmpname.prefixed")
+
+// The policy with a different prefix.
+//
+// ```novo
+// use tmpname
+//
+// fn main() [io]
+//     println(tmpname.with_prefix(tmpname.naming(), "fixture").prefix)
+// ```
+pub fn with_prefix(n: TmpNaming, prefix: Str) -> TmpNaming []
+    todo("tempdir-nv.tmpname.with_prefix")
+
+// The policy with a different suffix.
+//
+// ```novo
+// use tmpname
+//
+// fn main() [io]
+//     println(tmpname.with_suffix(tmpname.naming(), ".json").suffix)
+// ```
+pub fn with_suffix(n: TmpNaming, suffix: Str) -> TmpNaming []
+    todo("tempdir-nv.tmpname.with_suffix")
+
+// The policy with a different token length.
+//
+// Clamped to at least one character: a zero-length token makes every
+// name identical, which turns the attempt loop into a guaranteed
+// `TmpNameExhausted` rather than an error anybody can read.
+//
+// ```novo
+// use tmpname
+//
+// fn main() [io]
+//     println("${tmpname.with_token_len(tmpname.naming(), 12).token_len}")
+// ```
+pub fn with_token_len(n: TmpNaming, token_len: Int) -> TmpNaming []
+    todo("tempdir-nv.tmpname.with_token_len")
+
+// The policy with a different attempt ceiling.
+//
+// ```novo
+// use tmpname
+//
+// fn main() [io]
+//     println("${tmpname.with_attempts(tmpname.naming(), 3).attempts}")
+// ```
+pub fn with_attempts(n: TmpNaming, attempts: Int) -> TmpNaming []
+    todo("tempdir-nv.tmpname.with_attempts")
+
+// The name this policy produces for one token value.
+//
+// `prefix` + the token encoded to `token_len` characters + `suffix`.
+// Pure, and the whole reason the naming scheme is testable: a fixture
+// asserts the shape of a name without drawing entropy or touching a
+// filesystem.
+//
+// ```novo
+// use tmpname
+//
+// fn main() [io]
+//     println(tmpname.candidate(tmpname.prefixed("novo-"), 123456))
+// ```
+pub fn candidate(n: TmpNaming, token: Int) -> Str []
+    todo("tempdir-nv.tmpname.candidate")
+
+// One token value, drawn.
+//
+// The only `[rand]` function in the package.  It is separate from
+// `candidate` so that everything downstream of it is a pure function of
+// an integer — see the module comment.
+//
+// ```novo
+// use tmpname
+//
+// fn main() [io, rand]
+//     let t = tmpname.draw_token(tmpname.naming())
+//     println(tmpname.candidate(tmpname.naming(), t))
+// ```
+pub fn draw_token(n: TmpNaming) -> Int [rand]
+    todo("tempdir-nv.tmpname.draw_token")
+
+// `value` written in this module's alphabet, padded to `length`
+// characters.
+//
+// Least significant character first is deliberate: consecutive draws
+// then differ in the FIRST character, so a directory listing of leaked
+// fixtures does not sort into one indistinguishable run.
+//
+// ```novo
+// use tmpname
+//
+// fn main() [io]
+//     println(tmpname.encode_token(0, 6))
+// ```
+pub fn encode_token(value: Int, length: Int) -> Str []
+    todo("tempdir-nv.tmpname.encode_token")
+
+// The 32 characters a token is written in: `23456789abcdefghijkmnpqrstuvwxyz`.
+//
+// Published because a caller matching temp names with a pattern — a
+// cleanup script sweeping leaked fixtures — needs the character class,
+// and deriving it from an example name is how such a script starts
+// deleting the wrong things.
+//
+// ```novo
+// use tmpname
+//
+// fn main() [io]
+//     println(tmpname.alphabet())
+// ```
+pub fn alphabet() -> Str []
+    todo("tempdir-nv.tmpname.alphabet")
+
+// How many distinct names a policy can produce.
+//
+// `32 ^ token_len`, saturating.  Published so the attempt ceiling can
+// be argued rather than guessed: at six characters and a thousand live
+// fixtures the chance of one collision is about one in a billion, and
+// ten attempts is not a number anybody needs to think about again.
+//
+// ```novo
+// use tmpname
+//
+// fn main() [io]
+//     println("${tmpname.name_space(tmpname.naming())}")
+// ```
+pub fn name_space(n: TmpNaming) -> Int []
+    todo("tempdir-nv.tmpname.name_space")
+
+// Whether a string is usable as ONE path component.
+//
+// False for the empty string, for `.` and `..`, for anything
+// containing a path separator, and for anything containing a NUL.
+// This is the check `tmproot.child_path` runs, published separately so
+// a caller that builds names itself can run it before it builds a
+// path.
+//
+// ```novo
+// use tmpname
+//
+// fn main() [io]
+//     let ok = tmpname.component_ok("..")
+//     println("${ok}")
+// ```
+pub fn component_ok(name: Str) -> Bool []
+    todo("tempdir-nv.tmpname.component_ok")
+
+// Whether a name looks like one this policy produced.
+//
+// Prefix, `token_len` characters all from the alphabet, suffix.  The
+// predicate a sweeper needs: "delete every directory under this root
+// that MY policy could have made, and nothing else".  It is a
+// necessary condition and not a proof of ownership — two programs with
+// the same prefix produce the same shape — which is why the sweeping
+// functions in `tmpclean` still take a root.
+//
+// ```novo
+// use tmpname
+//
+// fn main() [io]
+//     let mine = tmpname.looks_generated(tmpname.prefixed("novo-"), "novo-a2f4k9")
+//     println("${mine}")
+// ```
+pub fn looks_generated(n: TmpNaming, name: Str) -> Bool []
+    todo("tempdir-nv.tmpname.looks_generated")

@@ -1,0 +1,134 @@
+// tmpname_tests.nv — the naming scheme, pinned without entropy.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: tempdir-nv.<module>.<fn>`.
+//
+// THE POINT OF THE SPLIT IS THESE TESTS.  `candidate` and
+// `encode_token` are `[]`, so the shape of a name — prefix, six
+// characters of alphabet, suffix — is asserted with no `[rand]` row
+// anywhere in this file, and a collision is produced by handing the
+// same integer twice rather than by hoping.
+
+use std.test
+use std.str
+use tmpname
+
+@test
+fn test_a_candidate_is_prefix_token_suffix() [io]
+    let n = tmpname.with_suffix(tmpname.prefixed("novo-"), ".json")
+    let name = tmpname.candidate(n, 123456)
+
+    test.case("the prefix is at the front")
+    test.assert(str.starts_with(name, "novo-"))
+
+    test.case("the suffix is at the back")
+    test.assert(str.ends_with(name, ".json"))
+
+    test.case("and the length is prefix + token_len + suffix")
+    test.assert(str.len(name) == 5 + n.token_len + 5)
+
+@test
+fn test_the_same_token_gives_the_same_name() [io]
+    // Which is how a test produces a collision on purpose, and why
+    // `draw_token` is a separate function.
+    let n = tmpname.naming()
+
+    test.case("twice from one token")
+    test.assert(tmpname.candidate(n, 7) == tmpname.candidate(n, 7))
+
+    test.case("and two tokens differ")
+    test.assert(tmpname.candidate(n, 7) != tmpname.candidate(n, 8))
+
+@test
+fn test_consecutive_tokens_differ_in_the_first_character() [io]
+    // Least significant character first, so a directory listing of
+    // leaked fixtures does not sort into one indistinguishable run.
+    let n = tmpname.naming()
+
+    test.case("token 0 and token 1")
+    test.assert(str.byte_at(tmpname.encode_token(0, 6), 0)
+                != str.byte_at(tmpname.encode_token(1, 6), 0))
+
+    test.case("both are still the requested length")
+    test.assert(str.len(tmpname.encode_token(0, 6)) == 6)
+    test.assert(str.len(tmpname.encode_token(1, 6)) == 6)
+
+@test
+fn test_the_alphabet_leaves_out_the_characters_that_misread() [io]
+    let a = tmpname.alphabet()
+
+    test.case("32 characters")
+    test.assert(str.len(a) == 32)
+
+    test.case("no zero, one, ell or oh")
+    test.assert(str.contains(a, "0") == false)
+    test.assert(str.contains(a, "1") == false)
+    test.assert(str.contains(a, "l") == false)
+    test.assert(str.contains(a, "o") == false)
+
+    test.case("no upper case, because two filesystems fold it")
+    test.assert(str.contains(a, "A") == false)
+
+@test
+fn test_the_name_space_is_the_argument_for_the_attempt_ceiling() [io]
+    test.case("six characters over 32 symbols")
+    test.assert(tmpname.name_space(tmpname.naming()) == 1073741824)
+
+    test.case("one character is 32")
+    test.assert(tmpname.name_space(tmpname.with_token_len(tmpname.naming(), 1)) == 32)
+
+@test
+fn test_a_zero_length_token_is_clamped_rather_than_accepted() [io]
+    // A zero-length token makes every name identical, which turns the
+    // attempt loop into a guaranteed exhaustion rather than an error
+    // anybody can read.
+    test.case("clamped to at least one")
+    test.assert(tmpname.with_token_len(tmpname.naming(), 0).token_len >= 1)
+
+@test
+fn test_component_ok_is_the_check_child_path_runs() [io]
+    test.case("an ordinary name")
+    test.assert(tmpname.component_ok("note.txt"))
+
+    test.case("a separator")
+    test.assert(tmpname.component_ok("a/b") == false)
+
+    test.case("dot and dot-dot")
+    test.assert(tmpname.component_ok(".") == false)
+    test.assert(tmpname.component_ok("..") == false)
+
+    test.case("the empty name")
+    test.assert(tmpname.component_ok("") == false)
+
+@test
+fn test_looks_generated_is_necessary_and_not_sufficient() [io]
+    let n = tmpname.prefixed("novo-")
+
+    test.case("a name this policy could have made")
+    test.assert(tmpname.looks_generated(n, "novo-a2f4k9"))
+
+    test.case("the wrong prefix")
+    test.assert(tmpname.looks_generated(n, "other-a2f4k9") == false)
+
+    test.case("the wrong token length")
+    test.assert(tmpname.looks_generated(n, "novo-a2f4") == false)
+
+    test.case("a character outside the alphabet")
+    test.assert(tmpname.looks_generated(n, "novo-a2f4k0") == false)
+
+@test
+fn test_a_policy_is_built_by_changing_one_field_at_a_time() [io]
+    let base = tmpname.naming()
+
+    test.case("with_prefix changes the prefix and nothing else")
+    let p = tmpname.with_prefix(base, "fixture-")
+    test.assert(p.prefix == "fixture-")
+    test.assert(p.token_len == base.token_len)
+
+    test.case("with_attempts changes the ceiling and nothing else")
+    let a = tmpname.with_attempts(base, 3)
+    test.assert(a.attempts == 3)
+    test.assert(a.prefix == base.prefix)
+
+    test.case("and the default ceiling is more than one, so a collision retries")
+    test.assert(base.attempts > 1)
