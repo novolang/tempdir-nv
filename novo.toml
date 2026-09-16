@@ -1,6 +1,6 @@
 [package]
 name        = "tempdir-nv"
-version     = "0.0.1"
+version     = "0.0.2"
 description = "Temporary files and directories that clean themselves up, in a language with no destructors: a TmpRoot is a directory this package created and may therefore delete, a TmpDir carries its own disposition so `persist` is a value change rather than a cancelled destructor, `close` is total and answers a report, and `with_temp_dir` is the shape that cannot be forgotten.  Removal is planned before it is performed, and a plan that leaves the root is refused.  Interface only — every body is a todo()."
 license     = "Apache-2.0"
 
