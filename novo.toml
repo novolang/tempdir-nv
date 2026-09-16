@@ -14,8 +14,9 @@ stability   = "draft"
 # `host`, and the rows are narrow on purpose.
 #
 # `[fs]` is the whole package: creating a directory, listing it,
-# deleting it, renaming it out.  `[io]` appears on exactly the four
-# functions that read the ENVIRONMENT for the platform temp root —
+# deleting it, renaming it out.  `[io]` appears on the two functions
+# that read the ENVIRONMENT for the platform temp root, `tmproot`'s
+# `system_root` and `system_root_or`, and on the seven that call them —
 # `env.get("TMPDIR")` is `[io]` and not `[fs]`, because the label
 # covers the environment as well as pipes and processes (SPEC § 5.1).
 # `[rand]` appears on exactly the functions that draw a name token.

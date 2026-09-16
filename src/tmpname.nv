@@ -49,7 +49,7 @@ pub struct TmpNaming
     // and is the default: a temp DIRECTORY with an extension is odd.
     suffix: Str
     // How many characters of token sit between the two.  Six is the
-    // default, which is 36 bits over this alphabet.
+    // default, which is 30 bits over this 32-character alphabet.
     token_len: Int
     // How many exclusive creations may fail with "it exists" before
     // the operation gives up with `TmpNameExhausted`.
